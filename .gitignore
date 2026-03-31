@@ -1,0 +1,17 @@
+node_modules
+.next
+dist
+.turbo
+coverage
+.run-logs
+.agents
+*.log
+.env
+.env.local
+apps/web/.next
+apps/server/dist
+apps/server/node_modules
+apps/web/node_modules
+packages/shared/node_modules
+pnpm-lock.yaml
+yarn.lock
