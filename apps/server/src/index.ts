@@ -38,6 +38,7 @@ app.get("/api/rooms/:roomId", (request, response) => {
 app.get("/api/home/:roomId", (request, response) => {
   const snapshot = roomStore.getSnapshot(request.params.roomId);
   const now = Date.now();
+  const participantById = new Map(snapshot.participants.map((item) => [item.id, item.name]));
 
   const onlineParticipants = snapshot.participants.filter(
     (participant) => participant.status === "online",
@@ -116,6 +117,64 @@ app.get("/api/home/:roomId", (request, response) => {
   const collaborationIndex =
     totalParticipants > 0 ? onlineParticipants / totalParticipants : 0;
   const suggestionLoad = Math.min(1, snapshot.suggestions.length / 6);
+  const recentEvents = snapshot.events.slice(0, 10).map((event) => {
+    const actorName = event.participantId ? participantById.get(event.participantId) : null;
+    const typeLabel = (() => {
+      switch (event.type) {
+        case "join":
+          return "Подключение";
+        case "leave":
+          return "Выход";
+        case "edit":
+          return "Правка";
+        case "run":
+          return "Запуск";
+        case "ai":
+          return "ИИ-ревью";
+        case "achievement":
+          return "Достижение";
+        case "rank-up":
+          return "Повышение";
+        case "system":
+        default:
+          return "Система";
+      }
+    })();
+
+    const risk = (() => {
+      if (event.type === "ai") {
+        if (suggestionSeverity.high > 0) return "high" as const;
+        if (suggestionSeverity.medium > 0) return "medium" as const;
+        return "low" as const;
+      }
+      if (event.type === "run" && (snapshot.terminal.status === "error" || snapshot.terminal.status === "timeout")) {
+        return "high" as const;
+      }
+      if (event.type === "system") return "medium" as const;
+      return "low" as const;
+    })();
+
+    const status = (() => {
+      if (event.type === "run") {
+        return snapshot.terminal.status;
+      }
+      if (event.type === "ai" && suggestionSeverity.high > 0) {
+        return "attention" as const;
+      }
+      return "ok" as const;
+    })();
+
+    return {
+      id: event.id,
+      type: event.type,
+      typeLabel,
+      message: event.message,
+      actorName,
+      createdAt: event.createdAt,
+      risk,
+      status,
+    };
+  });
 
   response.json({
     roomId: snapshot.roomId,
@@ -146,6 +205,7 @@ app.get("/api/home/:roomId", (request, response) => {
       suggestionLoad,
       stabilityIndex: Math.min(1, (securityScore + performanceScore) / 200),
     },
+    recentEvents,
   });
 });
 

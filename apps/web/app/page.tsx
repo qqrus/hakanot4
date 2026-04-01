@@ -5,13 +5,13 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
+  Activity,
   ArrowUpRight,
-  Bot,
   ChartNoAxesCombined,
-  Cpu,
   Eye,
   EyeOff,
-  Radar,
+  Gauge,
+  ShieldAlert,
   Sparkles,
   Users,
 } from "lucide-react";
@@ -50,6 +50,16 @@ interface HomeMetrics {
     suggestionLoad: number;
     stabilityIndex: number;
   };
+  recentEvents: Array<{
+    id: string;
+    type: "join" | "leave" | "edit" | "run" | "ai" | "system" | "achievement" | "rank-up";
+    typeLabel: string;
+    message: string;
+    actorName: string | null;
+    createdAt: string;
+    risk: "low" | "medium" | "high";
+    status: "ok" | "attention" | "idle" | "running" | "success" | "error" | "timeout";
+  }>;
 }
 
 const defaultMetrics: HomeMetrics = {
@@ -71,6 +81,7 @@ const defaultMetrics: HomeMetrics = {
     suggestionLoad: 0,
     stabilityIndex: 0.8,
   },
+  recentEvents: [],
 };
 
 function getExecutionStatusLabel(status: HomeMetrics["execution"]["status"]): string {
@@ -107,6 +118,59 @@ function areaPath(values: number[], width: number, height: number): string {
   return `${line} L ${width},${height} L 0,${height} Z`;
 }
 
+function getRiskLabel(risk: "low" | "medium" | "high"): string {
+  switch (risk) {
+    case "high":
+      return "высокий";
+    case "medium":
+      return "средний";
+    case "low":
+    default:
+      return "низкий";
+  }
+}
+
+function getRowStatusLabel(
+  status: "ok" | "attention" | "idle" | "running" | "success" | "error" | "timeout",
+): string {
+  switch (status) {
+    case "ok":
+      return "норма";
+    case "attention":
+      return "внимание";
+    case "running":
+      return "выполняется";
+    case "success":
+      return "успех";
+    case "error":
+      return "ошибка";
+    case "timeout":
+      return "тайм-аут";
+    case "idle":
+    default:
+      return "ожидание";
+  }
+}
+
+function getRowStatusTone(
+  status: "ok" | "attention" | "idle" | "running" | "success" | "error" | "timeout",
+): string {
+  switch (status) {
+    case "success":
+    case "ok":
+      return "border-success/25 bg-success/10 text-success";
+    case "running":
+    case "attention":
+      return "border-warning/25 bg-warning/10 text-warning";
+    case "error":
+    case "timeout":
+      return "border-primary/25 bg-primary/10 text-primary";
+    case "idle":
+    default:
+      return "border-slate-200 bg-slate-100 text-slate-600";
+  }
+}
+
 export default function HomePage() {
   const [roomId, setRoomId] = useState(DEMO_ROOM_ID);
   const [plan] = useState("Команда Pro");
@@ -114,6 +178,7 @@ export default function HomePage() {
   const [metrics, setMetrics] = useState<HomeMetrics>(defaultMetrics);
   const [backendOnline, setBackendOnline] = useState(false);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<string>(new Date().toISOString());
 
   useEffect(() => {
     let disposed = false;
@@ -139,6 +204,7 @@ export default function HomePage() {
         setMetrics(payload);
         setBackendOnline(true);
         setLatencyMs(Math.max(1, Math.round(performance.now() - startedAt)));
+        setLastUpdatedAt(new Date().toISOString());
       } catch {
         if (disposed) {
           return;
@@ -189,6 +255,91 @@ export default function HomePage() {
     if (metrics.throughputPerMinute >= 0.8) return "text-warning";
     return "text-primary";
   }, [metrics.throughputPerMinute]);
+
+  const judgeCards = useMemo(
+    () => [
+      {
+        title: "Индекс стабильности",
+        value: `${Math.round(metrics.core.stabilityIndex * 100)}%`,
+        hint: "Безопасность + рантайм",
+        icon: ShieldAlert,
+        tone: metrics.core.stabilityIndex >= 0.8 ? "text-success" : "text-warning",
+      },
+      {
+        title: "Индекс синхронизации",
+        value: `${metrics.syncRate}%`,
+        hint: `${metrics.participants.online}/${Math.max(metrics.participants.total, 1)} участников онлайн`,
+        icon: Users,
+        tone: metrics.syncRate >= 80 ? "text-accent" : "text-warning",
+      },
+      {
+        title: "Темп комнаты",
+        value: `${metrics.throughputPerMinute}/мин`,
+        hint: "Правки за последние 60 минут",
+        icon: Gauge,
+        tone: metrics.throughputPerMinute >= 0.8 ? "text-primary" : "text-slate-500",
+      },
+    ],
+    [metrics.core.stabilityIndex, metrics.syncRate, metrics.participants.online, metrics.participants.total, metrics.throughputPerMinute],
+  );
+
+  const hybridRows = useMemo(() => {
+    const metricRows = [
+      {
+        id: "metric-sync",
+        kind: "Метрика",
+        what: "Синхронизация команды",
+        value: `${metrics.syncRate}%`,
+        time: "сейчас",
+        risk: metrics.syncRate >= 80 ? "low" : "medium",
+        status: "ok",
+      },
+      {
+        id: "metric-ai",
+        kind: "Метрика",
+        what: "Нагрузка ИИ-ревью",
+        value: `${metrics.ai.suggestions} замечаний`,
+        time: "сейчас",
+        risk:
+          metrics.ai.severity.high > 0
+            ? "high"
+            : metrics.ai.severity.medium > 0
+              ? "medium"
+              : "low",
+        status: metrics.ai.severity.high > 0 ? "attention" : "ok",
+      },
+      {
+        id: "metric-run",
+        kind: "Метрика",
+        what: "Статус исполнения",
+        value: getExecutionStatusLabel(metrics.execution.status),
+        time: "сейчас",
+        risk:
+          metrics.execution.status === "error" || metrics.execution.status === "timeout"
+            ? "high"
+            : metrics.execution.status === "running"
+              ? "medium"
+              : "low",
+        status: metrics.execution.status,
+      },
+    ] as const;
+
+    const eventRows = metrics.recentEvents.slice(0, 7).map((event) => ({
+      id: event.id,
+      kind: event.typeLabel,
+      what: event.actorName ? `${event.actorName}: ${event.message}` : event.message,
+      value: event.type === "ai" ? `${metrics.ai.suggestions} активных` : event.typeLabel,
+      time: new Date(event.createdAt).toLocaleTimeString("ru-RU", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }),
+      risk: event.risk,
+      status: event.status,
+    }));
+
+    return [...metricRows, ...eventRows];
+  }, [metrics]);
 
   return (
     <main className="relative min-h-screen overflow-hidden px-4 py-5 lg:px-8">
@@ -257,11 +408,11 @@ export default function HomePage() {
               </p>
 
               <h2 className="mt-5 max-w-3xl text-4xl font-black leading-[1.05] tracking-tight text-ink lg:text-6xl">
-                Главная теперь реагирует на состояние комнаты в реальном времени.
+                Судейский режим: сразу видно, что происходит в комнате прямо сейчас.
               </h2>
 
               <p className="mt-5 max-w-2xl text-base leading-relaxed text-slate-600 lg:text-lg">
-                3D-визуал, графики и KPI-карточки связаны с данными backend для выбранной комнаты.
+                Все блоки на странице связаны с backend-метриками выбранной комнаты: активность, риски ИИ, исполнение и события участников.
               </p>
 
               <div className="mt-8 grid gap-3 sm:grid-cols-[1fr_auto]">
@@ -281,34 +432,27 @@ export default function HomePage() {
               </div>
 
               <div className="mt-8 grid gap-3 sm:grid-cols-3">
-                {[
-                  {
-                    label: "Редакторов онлайн",
-                    value: `${metrics.participants.online}/${Math.max(metrics.participants.total, 1)}`,
-                    icon: Users,
-                    tone: "text-accent",
-                  },
-                  {
-                    label: "Отклик ИИ",
-                    value: metrics.ai.reactionMs ? `${Math.round(metrics.ai.reactionMs / 1000)}с` : "н/д",
-                    icon: Bot,
-                    tone: "text-primary",
-                  },
-                  {
-                    label: "Песочница Python",
-                    value: getExecutionStatusLabel(metrics.execution.status),
-                    icon: Cpu,
-                    tone: "text-success",
-                  },
-                ].map((item) => (
-                  <div key={item.label} className="rounded-2xl border border-slate-200/80 bg-white/90 p-4">
+                {judgeCards.map((item, index) => (
+                  <motion.div
+                    key={item.title}
+                    initial={{ opacity: 0, y: 16 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.45, delay: 0.18 + index * 0.08 }}
+                    className="rounded-2xl border border-slate-200/80 bg-white/90 p-4"
+                  >
                     <item.icon size={16} className={clsx("mb-3", item.tone)} />
                     <div className="text-2xl font-black leading-none text-ink">{item.value}</div>
                     <div className="mt-1 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                      {item.label}
+                      {item.title}
                     </div>
-                  </div>
+                    <div className="mt-2 text-xs font-medium text-slate-500">{item.hint}</div>
+                  </motion.div>
                 ))}
+              </div>
+              <div className="mt-3 rounded-2xl border border-slate-200/80 bg-white/85 px-4 py-3 text-xs font-semibold text-slate-600">
+                Последнее обновление: {new Date(lastUpdatedAt).toLocaleTimeString("ru-RU")} ·
+                {" "}
+                Отклик API: {latencyMs ? `${latencyMs}мс` : "н/д"}
               </div>
             </div>
           </motion.div>
@@ -338,17 +482,18 @@ export default function HomePage() {
                 executionStatus={metrics.execution.status}
                 throughputPerMinute={metrics.throughputPerMinute}
                 highSeverityCount={metrics.ai.severity.high}
+                recentEventsCount={metrics.recentEvents.length}
               />
               {explainMode && (
                 <div className="pointer-events-none absolute inset-0">
                   <div className="absolute left-[45%] top-[48%] rounded-lg border border-white/70 bg-white/80 px-2 py-1 text-[10px] font-bold text-slate-700">
-                    Ядро = доля онлайн
+                    Планета = синхронизация команды
                   </div>
                   <div className="absolute left-[60%] top-[20%] rounded-lg border border-white/70 bg-white/80 px-2 py-1 text-[10px] font-bold text-slate-700">
-                    Кольцо = пропускная способность
+                    Орбиты = темп правок
                   </div>
                   <div className="absolute left-[16%] top-[65%] rounded-lg border border-white/70 bg-white/80 px-2 py-1 text-[10px] font-bold text-slate-700">
-                    Оболочка = высокий риск
+                    Вспышки = события и риски
                   </div>
                 </div>
               )}
@@ -369,26 +514,23 @@ export default function HomePage() {
             </div>
             <div className="mt-3 rounded-2xl border border-slate-200/70 bg-white/80 p-3">
               <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
-                Легенда Signal Core
+                Что показывает 3D-модель
               </p>
               <div className="mt-2 grid gap-2 text-xs font-medium text-slate-600 sm:grid-cols-2">
                 <p>
-                  <span className="font-black text-slate-800">Размер ядра:</span> доля онлайн-участников
+                  <span className="font-black text-slate-800">Размер планеты:</span> доля активных участников в комнате
                 </p>
                 <p>
-                  <span className="font-black text-slate-800">Скорость кольца:</span> правки в минуту
+                  <span className="font-black text-slate-800">Скорость орбит:</span> пропускная способность (правки в минуту)
                 </p>
                 <p>
-                  <span className="font-black text-slate-800">Риск-оболочка:</span> критичные замечания ИИ
+                  <span className="font-black text-slate-800">Красная луна:</span> количество критичных замечаний ИИ
                 </p>
                 <p>
-                  <span className="font-black text-slate-800">Внешний щит:</span> индекс стабильности
+                  <span className="font-black text-slate-800">Внешний ореол:</span> индекс стабильности комнаты
                 </p>
                 <p className="sm:col-span-2">
-                  <span className="font-black text-slate-800">Цвет:</span> статус выполнения ({getExecutionStatusLabel(metrics.execution.status)})
-                </p>
-                <p className="sm:col-span-2">
-                  <span className="font-black text-slate-800">Пороги:</span> низкий &lt; 0.8, средний 0.8-2, высокий &gt; 2 edits/мин
+                  <span className="font-black text-slate-800">Цвет планеты:</span> текущее состояние запуска ({getExecutionStatusLabel(metrics.execution.status)})
                 </p>
               </div>
             </div>
@@ -494,34 +636,61 @@ export default function HomePage() {
             className="rounded-[30px] border border-white/75 bg-white/70 p-6 shadow-panel backdrop-blur-2xl lg:col-span-7"
           >
             <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-lg font-black text-ink">Поток платформы</h3>
-              
-              <Radar size={18} className="text-accent" />
+              <div>
+                <h3 className="text-lg font-black text-ink">Контроль комнаты: метрики + события</h3>
+                <p className="text-sm text-slate-500">Гибридная таблица для жюри и пользователей, обновляется в реальном времени</p>
+              </div>
+              <Activity size={18} className="text-accent" />
             </div>
-            <div className="grid gap-3 md:grid-cols-3">
-              {[
-                {
-                  icon: "01",
-                  title: "Совместный редактор",
-                  body: `Сейчас онлайн ${metrics.participants.online} из ${Math.max(metrics.participants.total, 1)} участников.`,
-                },
-                {
-                  icon: "02",
-                  title: "Цикл AI-ревью",
-                  body: `${metrics.ai.suggestions} подсказок: высокий ${metrics.ai.severity.high} / средний ${metrics.ai.severity.medium} / низкий ${metrics.ai.severity.low}.`,
-                },
-                {
-                  icon: "03",
-                  title: "Запуск в песочнице",
-                  body: `Статус выполнения: ${getExecutionStatusLabel(metrics.execution.status)}. Пропускная способность ${metrics.throughputPerMinute}/мин.`,
-                },
-              ].map((item) => (
-                <div key={item.title} className="rounded-2xl border border-slate-200/70 bg-white/90 p-4">
-                  <p className="text-xs font-black tracking-[0.2em] text-slate-400">{item.icon}</p>
-                  <h4 className="mt-2 text-sm font-black text-ink">{item.title}</h4>
-                  <p className="mt-2 text-sm leading-relaxed text-slate-600">{item.body}</p>
-                </div>
-              ))}
+            <div className="overflow-hidden rounded-3xl border border-slate-200/80 bg-white/90">
+              <div className="grid grid-cols-[1fr_2.2fr_1fr_0.9fr_1fr] gap-3 border-b border-slate-200/80 bg-slate-50 px-4 py-3 text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">
+                <span>Источник</span>
+                <span>Что происходит</span>
+                <span>Показатель</span>
+                <span>Риск</span>
+                <span>Состояние</span>
+              </div>
+              <div className="max-h-[350px] overflow-y-auto">
+                {hybridRows.map((row, index) => (
+                  <motion.div
+                    key={row.id}
+                    initial={{ opacity: 0, x: -16 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ duration: 0.35, delay: Math.min(0.02 * index, 0.22) }}
+                    className="grid grid-cols-[1fr_2.2fr_1fr_0.9fr_1fr] gap-3 border-b border-slate-100 px-4 py-3 text-sm last:border-none hover:bg-slate-50/80"
+                  >
+                    <span className="inline-flex items-center gap-2 font-bold text-slate-700">
+                      <span className="h-2 w-2 rounded-full bg-accent" />
+                      {row.kind}
+                    </span>
+                    <span className="font-medium text-slate-600">{row.what}</span>
+                    <span className="font-bold text-ink">{row.value}</span>
+                    <span
+                      className={clsx(
+                        "inline-flex w-fit items-center rounded-full px-2 py-1 text-[11px] font-black uppercase tracking-wide",
+                        row.risk === "high"
+                          ? "bg-primary/10 text-primary"
+                          : row.risk === "medium"
+                            ? "bg-warning/10 text-warning"
+                            : "bg-success/10 text-success",
+                      )}
+                    >
+                      {getRiskLabel(row.risk)}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={clsx(
+                          "inline-flex rounded-full border px-2 py-1 text-[11px] font-black uppercase tracking-wide",
+                          getRowStatusTone(row.status),
+                        )}
+                      >
+                        {getRowStatusLabel(row.status)}
+                      </span>
+                      <span className="text-xs text-slate-400">{row.time}</span>
+                    </div>
+                  </motion.div>
+                ))}
+              </div>
             </div>
           </motion.article>
         </section>
@@ -533,7 +702,7 @@ export default function HomePage() {
           className="mt-5 rounded-[24px] border border-white/80 bg-white/65 px-5 py-4 text-sm text-slate-500 shadow-panel backdrop-blur-xl"
         >
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="font-medium">Технологии: Next.js + Express + WebSocket + Yjs + Docker-песочница</p>
+            <p className="font-medium">Откройте комнату и наблюдайте, как метрики и события обновляются вживую.</p>
             <Link
               href={`/room/${DEMO_ROOM_ID}`}
               className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-black uppercase tracking-wide text-slate-700 transition hover:border-accent hover:text-accent"
