@@ -156,7 +156,7 @@ class RoomStore {
           room.suggestions = suggestions;
           let aiEvent: SessionEvent | undefined;
           if (suggestions.length > 0) {
-            aiEvent = createEvent("ai", `AI ассистент обнаружил ${suggestions.length} зон для улучшения`, actorId);
+            aiEvent = createEvent("ai", `ИИ-ассистент обнаружил ${suggestions.length} зон для улучшения`, actorId);
             room.events = [aiEvent, ...room.events].slice(0, 50);
           }
           if (onAiComplete) onAiComplete(suggestions, aiEvent);
