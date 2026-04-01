@@ -29,6 +29,10 @@ interface CollaborationCallbacks {
   onConnectionChange: (connected: boolean) => void;
 }
 
+interface CollaborationOptions {
+  canEdit?: boolean;
+}
+
 export interface CollaborationParticipant {
   id: string;
   name: string;
@@ -66,6 +70,7 @@ export class CollaborationClient {
   private readonly roomId: string;
   private readonly wsUrl: string;
   private readonly participant: CollaborationParticipant;
+  private readonly canEdit: boolean;
   private socket: WebSocket | null = null;
   private reconnectTimeout: number | null = null;
   private isDisposed = false;
@@ -75,14 +80,19 @@ export class CollaborationClient {
     wsUrl: string,
     participant: CollaborationParticipant,
     callbacks: CollaborationCallbacks,
+    options?: CollaborationOptions,
   ) {
     this.roomId = roomId;
     this.wsUrl = wsUrl;
     this.participant = participant;
     this.callbacks = callbacks;
+    this.canEdit = options?.canEdit ?? true;
 
     this.doc.on("update", (update, origin) => {
       if (origin === this) {
+        return;
+      }
+      if (!this.canEdit) {
         return;
       }
 

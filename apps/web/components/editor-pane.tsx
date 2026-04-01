@@ -11,11 +11,12 @@ interface EditorPaneProps {
   doc: Y.Doc;
   awareness: Awareness;
   language: string;
+  readOnly?: boolean;
 }
 
 type MonacoBindingType = typeof import("y-monaco").MonacoBinding;
 
-export function EditorPane({ doc, awareness, language }: EditorPaneProps) {
+export function EditorPane({ doc, awareness, language, readOnly = false }: EditorPaneProps) {
   const bindingRef = useRef<InstanceType<MonacoBindingType> | null>(null);
 
   useEffect(() => {
@@ -59,6 +60,8 @@ export function EditorPane({ doc, awareness, language }: EditorPaneProps) {
         smoothScrolling: true,
         scrollBeyondLastLine: false,
         wordWrap: "on",
+        readOnly,
+        domReadOnly: readOnly,
       }}
     />
   );

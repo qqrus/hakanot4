@@ -33,6 +33,17 @@ export interface RoomMembership {
   joinedAt: string;
 }
 
+export interface RoomMemberInfo {
+  roomId: string;
+  userId: string;
+  email: string;
+  name: string;
+  avatar: string;
+  role: RoomRole;
+  isAnonymous: boolean;
+  joinedAt: string;
+}
+
 export interface RoomRuntime {
   roomId: string;
   containerId: string;
@@ -444,6 +455,54 @@ export async function getMembership(roomId: string, userId: string): Promise<Roo
     isAnonymous: row.is_anonymous,
     joinedAt: row.joined_at.toISOString(),
   };
+}
+
+export async function listRoomMembers(roomId: string, requesterId: string): Promise<RoomMemberInfo[]> {
+  const membership = await getMembership(roomId, requesterId);
+  if (!membership) {
+    throw new Error("Нет доступа к участникам этой комнаты.");
+  }
+
+  const rows = await query<{
+    room_id: string;
+    user_id: string;
+    email: string;
+    name: string;
+    avatar: string;
+    role: RoomRole;
+    is_anonymous: boolean;
+    joined_at: Date;
+  }>(
+    `
+      SELECT
+        m.room_id,
+        m.user_id,
+        u.email,
+        u.name,
+        u.avatar,
+        m.role,
+        m.is_anonymous,
+        m.joined_at
+      FROM room_memberships m
+      JOIN app_users u ON u.id = m.user_id
+      WHERE m.room_id = $1
+      ORDER BY
+        CASE m.role WHEN 'owner' THEN 0 WHEN 'editor' THEN 1 ELSE 2 END,
+        m.joined_at ASC
+    `,
+    [roomId],
+  );
+
+  return rows.map((row) => ({
+    roomId: row.room_id,
+    userId: row.user_id,
+    email: row.email,
+    name: row.name,
+    avatar: row.avatar,
+    role: row.role,
+    isAnonymous: row.is_anonymous,
+    joinedAt: row.joined_at.toISOString(),
+  }));
 }
 
 export async function joinRoom(input: {

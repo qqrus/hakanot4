@@ -30,7 +30,37 @@ export interface PlatformRoom {
   } | null;
 }
 
-function getToken(): string | null {
+export interface PlatformRoomMember {
+  roomId: string;
+  userId: string;
+  email: string;
+  name: string;
+  avatar: string;
+  role: "owner" | "editor" | "viewer";
+  isAnonymous: boolean;
+  joinedAt: string;
+}
+
+export interface PlatformRoomMetaResponse {
+  room: {
+    id: string;
+    ownerId: string;
+    title: string;
+    goal: string;
+    visibility: "open" | "closed";
+    createdAt: string;
+    updatedAt: string;
+  };
+  membership: {
+    roomId: string;
+    userId: string;
+    role: "owner" | "editor" | "viewer";
+    isAnonymous: boolean;
+    joinedAt: string;
+  };
+}
+
+export function getAuthToken(): string | null {
   if (typeof window === "undefined") {
     return null;
   }
@@ -52,7 +82,7 @@ export function clearToken(): void {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = getToken();
+  const token = getAuthToken();
   const response = await fetch(`${SERVER_URL}${path}`, {
     ...init,
     headers: {
@@ -132,5 +162,37 @@ export async function joinRoomWithCode(roomId: string, accessCode?: string): Pro
   await request(`/api/platform/rooms/${encodeURIComponent(roomId)}/join`, {
     method: "POST",
     body: JSON.stringify({ accessCode }),
+  });
+}
+
+export async function getRoomMembers(roomId: string): Promise<PlatformRoomMember[]> {
+  const result = await request<{ members: PlatformRoomMember[] }>(
+    `/api/platform/rooms/${encodeURIComponent(roomId)}/members`,
+  );
+  return result.members;
+}
+
+export async function getRoomMeta(roomId: string): Promise<PlatformRoomMetaResponse> {
+  return request<PlatformRoomMetaResponse>(`/api/platform/rooms/${encodeURIComponent(roomId)}/meta`);
+}
+
+export async function setMemberRole(
+  roomId: string,
+  targetUserId: string,
+  role: "editor" | "viewer",
+): Promise<void> {
+  await request(`/api/platform/rooms/${encodeURIComponent(roomId)}/role`, {
+    method: "POST",
+    body: JSON.stringify({ targetUserId, role }),
+  });
+}
+
+export async function setAnonymousMode(
+  roomId: string,
+  isAnonymous: boolean,
+): Promise<void> {
+  await request(`/api/platform/rooms/${encodeURIComponent(roomId)}/anonymous`, {
+    method: "POST",
+    body: JSON.stringify({ isAnonymous }),
   });
 }

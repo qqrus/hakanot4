@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -19,6 +19,7 @@ import {
   CollaborationClient,
   type CollaborationParticipant,
 } from "../lib/collaboration-client";
+import { getAuthToken, getRoomMeta } from "../lib/platform-api";
 import { getLocalIdentity, rotateLocalIdentity } from "../lib/identity";
 
 import { PulseSphere } from "./ui/pulse-sphere";
@@ -129,6 +130,7 @@ export function RoomClient({ roomId }: RoomClientProps) {
   const [connected, setConnected] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isAiProcessing, setIsAiProcessing] = useState(false);
+  const [roomRole, setRoomRole] = useState<"owner" | "editor" | "viewer" | null>(null);
 
   useEffect(() => {
     setParticipant(getLocalIdentity());
@@ -139,11 +141,28 @@ export function RoomClient({ roomId }: RoomClientProps) {
       return;
     }
 
-    const activeParticipant = participant;
+    let activeParticipant = participant;
+    let resolvedRole: "owner" | "editor" | "viewer" | null = null;
     let activeClient: CollaborationClient | null = null;
 
     async function bootstrap(): Promise<void> {
       setErrorMessage(null);
+      setRoomRole(null);
+
+      const token = getAuthToken();
+      if (token) {
+        try {
+          const meta = await getRoomMeta(roomId);
+          resolvedRole = meta.membership.role;
+          setRoomRole(resolvedRole);
+          activeParticipant = {
+            ...activeParticipant,
+            id: meta.membership.userId,
+          };
+        } catch {
+          // Public/demo rooms can work without role metadata.
+        }
+      }
 
       const response = await fetch(`${SERVER_URL}/api/rooms/${roomId}`, {
         cache: "no-store",
@@ -213,6 +232,8 @@ export function RoomClient({ roomId }: RoomClientProps) {
         },
         onError: (message) => setErrorMessage(message),
         onConnectionChange: (nextConnected) => setConnected(nextConnected),
+      }, {
+        canEdit: resolvedRole !== "viewer",
       });
 
       activeClient.connect();
@@ -237,6 +258,7 @@ export function RoomClient({ roomId }: RoomClientProps) {
     if (isAiProcessing) return "active";
     return "idle";
   }, [errorMessage, isAiProcessing]);
+  const isViewer = roomRole === "viewer";
 
   return (
     <main className="min-h-screen px-4 py-5 font-sans relative overflow-hidden bg-transparent text-slate-800 lg:px-6">
@@ -290,11 +312,11 @@ export function RoomClient({ roomId }: RoomClientProps) {
               Сменить
             </button>
             <button
-              disabled={!client || !snapshot}
-              onClick={() => client?.runCode({ roomId, language: "python", code: client.doc.getText("monaco").toString() })}
+              disabled={!client || !snapshot || isViewer}
+              onClick={() => { if (isViewer) { return; } client?.runCode({ roomId, language: "python", code: client.doc.getText("monaco").toString() }); }}
               className="rounded-2xl bg-slate-800 px-8 py-2.5 text-[11px] font-black uppercase tracking-widest text-white transition-all shadow-md hover:shadow-lg hover:-translate-y-0.5 active:scale-95 hover:bg-slate-900 disabled:opacity-50"
             >
-              Запустить
+              {isViewer ? "Только просмотр" : "Запустить"}
             </button>
           </div>
         </motion.header>
@@ -302,6 +324,11 @@ export function RoomClient({ roomId }: RoomClientProps) {
         {errorMessage && (
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} className="rounded-2xl border border-primary/20 bg-primary/5 p-4 text-sm font-semibold text-primary shadow-sm">
             <span className="mr-3 text-xl">⚠️</span> {errorMessage}
+          </motion.div>
+        )}
+        {isViewer && (
+          <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border border-warning/30 bg-warning/10 p-4 text-sm font-semibold text-warning shadow-sm">
+            Режим viewer: редактирование и запуск кода отключены для этой комнаты.
           </motion.div>
         )}
 
@@ -318,7 +345,12 @@ export function RoomClient({ roomId }: RoomClientProps) {
               </div>
               <div className="flex-1 relative bg-white/50 backdrop-blur-sm">
                 {client ? (
-                  <EditorPane doc={client.doc} awareness={client.awareness} language={snapshot?.language ?? DEFAULT_LANGUAGE} />
+                  <EditorPane
+                    doc={client.doc}
+                    awareness={client.awareness}
+                    language={snapshot?.language ?? DEFAULT_LANGUAGE}
+                    readOnly={isViewer}
+                  />
                 ) : (
                   <div className="flex h-full items-center justify-center text-sm font-medium text-slate-400 animate-pulse">
                     {"Подготовка рабочего пространства..."}
@@ -468,3 +500,4 @@ export function RoomClient({ roomId }: RoomClientProps) {
     </main>
   );
 }
+

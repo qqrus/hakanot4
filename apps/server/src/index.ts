@@ -24,6 +24,7 @@ import {
   getRoomRuntime,
   getUserById,
   joinRoom,
+  listRoomMembers,
   listRunningRoomRuntimes,
   listRoomsForUser,
   markRoomRuntimeWarning,
@@ -407,6 +408,16 @@ app.get("/api/platform/rooms/:roomId/meta", requireAuth, async (request: Authent
   } catch (error) {
     console.error("room meta failed:", error);
     response.status(500).json({ message: "Не удалось получить метаданные комнаты." });
+  }
+});
+
+app.get("/api/platform/rooms/:roomId/members", requireAuth, async (request: AuthenticatedRequest, response) => {
+  const roomId = String(request.params.roomId ?? "");
+  try {
+    const members = await listRoomMembers(roomId, request.auth!.userId);
+    response.json({ members });
+  } catch (error) {
+    response.status(403).json({ message: error instanceof Error ? error.message : "Не удалось получить участников комнаты." });
   }
 });
 

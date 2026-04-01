@@ -5,15 +5,20 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { ArrowUpRight, Pause, Play, UserRound } from "lucide-react";
+import clsx from "clsx";
 
 import {
   clearToken,
   createRoom,
   getMe,
   getMyRooms,
+  getRoomMembers,
   joinRoomWithCode,
+  setAnonymousMode,
+  setMemberRole,
   type AuthUser,
   type PlatformRoom,
+  type PlatformRoomMember,
   startRoom,
   stopRoom,
   updateGoal,
@@ -23,8 +28,11 @@ export default function CabinetPage() {
   const router = useRouter();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [rooms, setRooms] = useState<PlatformRoom[]>([]);
+  const [membersByRoom, setMembersByRoom] = useState<Record<string, PlatformRoomMember[]>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [updatingRoleKey, setUpdatingRoleKey] = useState<string | null>(null);
+  const [updatingAnonymousRoomId, setUpdatingAnonymousRoomId] = useState<string | null>(null);
 
   const [title, setTitle] = useState("");
   const [goal, setGoal] = useState("");
@@ -40,8 +48,17 @@ export default function CabinetPage() {
     setErrorMessage(null);
     try {
       const [me, myRooms] = await Promise.all([getMe(), getMyRooms()]);
+      const membersEntries = await Promise.all(
+        myRooms.map(async (room) => [room.id, await getRoomMembers(room.id)] as const),
+      );
+      const nextMembersByRoom: Record<string, PlatformRoomMember[]> = {};
+      for (const [roomId, members] of membersEntries) {
+        nextMembersByRoom[roomId] = members;
+      }
+
       setUser(me);
       setRooms(myRooms);
+      setMembersByRoom(nextMembersByRoom);
     } catch (error) {
       clearToken();
       router.push("/auth");
@@ -98,12 +115,44 @@ export default function CabinetPage() {
     }
   };
 
+  const applyMemberRole = async (
+    roomId: string,
+    targetUserId: string,
+    role: "editor" | "viewer",
+  ): Promise<void> => {
+    const key = `${roomId}:${targetUserId}`;
+    setUpdatingRoleKey(key);
+    setErrorMessage(null);
+    try {
+      await setMemberRole(roomId, targetUserId, role);
+      await load();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Не удалось изменить роль участника.");
+    } finally {
+      setUpdatingRoleKey(null);
+    }
+  };
+
+  const toggleAnonymous = async (roomId: string, nextValue: boolean): Promise<void> => {
+    setUpdatingAnonymousRoomId(roomId);
+    setErrorMessage(null);
+    try {
+      await setAnonymousMode(roomId, nextValue);
+      await load();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Не удалось изменить режим инкогнито.");
+    } finally {
+      setUpdatingAnonymousRoomId(null);
+    }
+  };
+
   const submitJoin = async (): Promise<void> => {
     setIsJoining(true);
     setErrorMessage(null);
     try {
-      await joinRoomWithCode(joinRoomId.trim(), joinCode.trim() || undefined);
-      router.push(`/room/${encodeURIComponent(joinRoomId.trim())}`);
+      const targetRoomId = joinRoomId.trim();
+      await joinRoomWithCode(targetRoomId, joinCode.trim() || undefined);
+      router.push(`/room/${encodeURIComponent(targetRoomId)}`);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Не удалось войти в комнату.");
     } finally {
@@ -159,7 +208,7 @@ export default function CabinetPage() {
         <section className="grid gap-5 lg:grid-cols-[1.05fr_1.95fr]">
           <article className="rounded-[28px] border border-white/80 bg-white/70 p-5 shadow-panel backdrop-blur-2xl">
             <h2 className="text-lg font-black text-ink">Создать комнату</h2>
-            <p className="mt-1 text-sm text-slate-500">Цель комнаты будет направлять ИИ-подсказки в реальном времени.</p>
+            <p className="mt-1 text-sm text-slate-500">Цель комнаты помогает ИИ давать релевантные подсказки.</p>
 
             <div className="mt-4 space-y-3">
               <input
@@ -179,14 +228,14 @@ export default function CabinetPage() {
                 <button
                   type="button"
                   onClick={() => setVisibility("open")}
-                  className={`rounded-xl px-3 py-2 text-sm font-bold ${visibility === "open" ? "bg-ink text-white" : "bg-white text-slate-500 border border-slate-200"}`}
+                  className={clsx("rounded-xl px-3 py-2 text-sm font-bold", visibility === "open" ? "bg-ink text-white" : "bg-white text-slate-500 border border-slate-200")}
                 >
                   Открытая
                 </button>
                 <button
                   type="button"
                   onClick={() => setVisibility("closed")}
-                  className={`rounded-xl px-3 py-2 text-sm font-bold ${visibility === "closed" ? "bg-ink text-white" : "bg-white text-slate-500 border border-slate-200"}`}
+                  className={clsx("rounded-xl px-3 py-2 text-sm font-bold", visibility === "closed" ? "bg-ink text-white" : "bg-white text-slate-500 border border-slate-200")}
                 >
                   Закрытая
                 </button>
@@ -210,7 +259,7 @@ export default function CabinetPage() {
             </div>
 
             <div className="mt-5 rounded-2xl border border-slate-200/70 bg-white/85 p-4">
-              <h3 className="text-sm font-black text-ink">Войти в комнату по ID</h3>
+              <h3 className="text-sm font-black text-ink">Войти по ID комнаты</h3>
               <p className="mt-1 text-xs text-slate-500">Для закрытых комнат укажите код доступа.</p>
               <div className="mt-3 space-y-2">
                 <input
@@ -239,72 +288,143 @@ export default function CabinetPage() {
 
           <article className="rounded-[28px] border border-white/80 bg-white/70 p-5 shadow-panel backdrop-blur-2xl">
             <h2 className="text-lg font-black text-ink">Мои комнаты</h2>
-            <p className="mt-1 text-sm text-slate-500">Владелец управляет запуском контейнера и целями комнаты.</p>
+            <p className="mt-1 text-sm text-slate-500">Владелец управляет runtime, целями и ролями участников.</p>
 
             <div className="mt-4 space-y-3">
-              {rooms.map((room, index) => (
-                <motion.div
-                  key={room.id}
-                  initial={{ opacity: 0, y: 14 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.35, delay: Math.min(index * 0.04, 0.2) }}
-                  className="rounded-2xl border border-slate-200/80 bg-white/90 p-4"
-                >
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <h3 className="text-base font-black text-ink">{room.title}</h3>
-                      <p className="mt-1 text-xs text-slate-500">{room.id}</p>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-slate-600">
-                        {room.visibility === "open" ? "Открытая" : "Закрытая"}
-                      </span>
-                      <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[10px] font-black uppercase tracking-wide text-slate-600">
-                        {room.role}
-                      </span>
-                      <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[10px] font-black uppercase tracking-wide text-slate-600 inline-flex items-center gap-1">
-                        <UserRound size={12} />
-                        {room.onlineCount}/8 онлайн
-                      </span>
-                    </div>
-                  </div>
+              {rooms.map((room, index) => {
+                const roomMembers = membersByRoom[room.id] ?? [];
+                const selfMember = roomMembers.find((member) => member.userId === user?.id);
+                const isAnonymous = selfMember?.isAnonymous ?? room.isAnonymous;
 
-                  <textarea
-                    defaultValue={room.goal}
-                    rows={2}
-                    className="mt-3 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none focus:border-accent"
-                    onBlur={(event) => {
-                      if (event.target.value.trim() && event.target.value.trim() !== room.goal) {
-                        void applyGoal(room.id, event.target.value.trim());
-                      }
-                    }}
-                  />
+                return (
+                  <motion.div
+                    key={room.id}
+                    initial={{ opacity: 0, y: 14 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.35, delay: Math.min(index * 0.04, 0.2) }}
+                    className="rounded-2xl border border-slate-200/80 bg-white/90 p-4"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h3 className="text-base font-black text-ink">{room.title}</h3>
+                        <p className="mt-1 text-xs text-slate-500">{room.id}</p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-slate-600">
+                          {room.visibility === "open" ? "Открытая" : "Закрытая"}
+                        </span>
+                        <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[10px] font-black uppercase tracking-wide text-slate-600">
+                          {room.role}
+                        </span>
+                        <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[10px] font-black uppercase tracking-wide text-slate-600 inline-flex items-center gap-1">
+                          <UserRound size={12} />
+                          {room.onlineCount}/8 онлайн
+                        </span>
+                      </div>
+                    </div>
 
-                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-xs font-semibold text-slate-500">
-                      Runtime: {room.runtime?.status ?? "stopped"} {room.runtime?.volumeName ? `· ${room.runtime.volumeName}` : ""}
-                    </span>
-                    <div className="flex items-center gap-2">
-                      {room.role === "owner" && (
+                    <textarea
+                      defaultValue={room.goal}
+                      rows={2}
+                      readOnly={room.role !== "owner"}
+                      className={clsx(
+                        "mt-3 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none",
+                        room.role === "owner"
+                          ? "bg-slate-50 text-slate-700 focus:border-accent"
+                          : "bg-slate-100 text-slate-500 cursor-not-allowed",
+                      )}
+                      onBlur={(event) => {
+                        if (room.role !== "owner") {
+                          return;
+                        }
+                        const nextGoal = event.target.value.trim();
+                        if (nextGoal && nextGoal !== room.goal) {
+                          void applyGoal(room.id, nextGoal);
+                        }
+                      }}
+                    />
+
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-slate-500">
+                        Runtime: {room.runtime?.status ?? "stopped"} {room.runtime?.volumeName ? `· ${room.runtime.volumeName}` : ""}
+                      </span>
+                      <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          onClick={() => void toggleRuntime(room)}
-                          className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-2 text-[11px] font-black uppercase tracking-wide text-slate-700"
+                          onClick={() => void toggleAnonymous(room.id, !isAnonymous)}
+                          disabled={updatingAnonymousRoomId === room.id}
+                          className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-2 text-[11px] font-black uppercase tracking-wide text-slate-700 disabled:opacity-50"
                         >
-                          {room.runtime?.status === "running" ? <Pause size={12} /> : <Play size={12} />}
-                          {room.runtime?.status === "running" ? "Остановить" : "Запустить"}
+                          {isAnonymous ? "Инкогнито: вкл" : "Инкогнито: выкл"}
                         </button>
-                      )}
-                      <Link
-                        href={`/room/${room.id}`}
-                        className="inline-flex items-center gap-1 rounded-full bg-ink px-3 py-2 text-[11px] font-black uppercase tracking-wide text-white"
-                      >
-                        Войти <ArrowUpRight size={12} />
-                      </Link>
+                        {room.role === "owner" && (
+                          <button
+                            type="button"
+                            onClick={() => void toggleRuntime(room)}
+                            className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-2 text-[11px] font-black uppercase tracking-wide text-slate-700"
+                          >
+                            {room.runtime?.status === "running" ? <Pause size={12} /> : <Play size={12} />}
+                            {room.runtime?.status === "running" ? "Остановить" : "Запустить"}
+                          </button>
+                        )}
+                        <Link
+                          href={`/room/${room.id}`}
+                          className="inline-flex items-center gap-1 rounded-full bg-ink px-3 py-2 text-[11px] font-black uppercase tracking-wide text-white"
+                        >
+                          Войти <ArrowUpRight size={12} />
+                        </Link>
+                      </div>
                     </div>
-                  </div>
-                </motion.div>
-              ))}
+
+                    {room.role === "owner" && (
+                      <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                        <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">
+                          Участники и роли
+                        </p>
+                        <div className="mt-2 space-y-2">
+                          {roomMembers.map((member) => {
+                            const itemKey = `${room.id}:${member.userId}`;
+                            return (
+                              <div key={itemKey} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+                                <div>
+                                  <p className="text-sm font-semibold text-slate-700">
+                                    {member.name} {member.userId === user?.id ? "(вы)" : ""}
+                                  </p>
+                                  <p className="text-xs text-slate-500">{member.email}</p>
+                                </div>
+                                {member.role === "owner" ? (
+                                  <span className="rounded-full border border-slate-200 bg-slate-100 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-slate-600">
+                                    owner
+                                  </span>
+                                ) : (
+                                  <select
+                                    value={member.role}
+                                    disabled={updatingRoleKey === itemKey}
+                                    onChange={(event) =>
+                                      void applyMemberRole(
+                                        room.id,
+                                        member.userId,
+                                        event.target.value as "editor" | "viewer",
+                                      )
+                                    }
+                                    className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-700 disabled:opacity-50"
+                                  >
+                                    <option value="editor">editor</option>
+                                    <option value="viewer">viewer</option>
+                                  </select>
+                                )}
+                              </div>
+                            );
+                          })}
+                          {roomMembers.length === 0 && (
+                            <p className="text-xs text-slate-500">Участники пока не подключались.</p>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </motion.div>
+                );
+              })}
               {rooms.length === 0 && (
                 <div className="rounded-2xl border border-dashed border-slate-200 bg-white/70 p-5 text-sm font-medium text-slate-500">
                   Пока нет комнат. Создайте первую в левой колонке.
