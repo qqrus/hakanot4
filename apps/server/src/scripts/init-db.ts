@@ -1,4 +1,5 @@
 import { pool } from "../lib/db.js";
+import { ensurePlatformSchema } from "../services/platform-store.js";
 
 async function main(): Promise<void> {
   await pool.query(`
@@ -21,6 +22,8 @@ async function main(): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
+
+  await ensurePlatformSchema();
 
   console.log("Database schema is ready.");
   await pool.end();

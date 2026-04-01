@@ -18,6 +18,7 @@ const envSchema = z.object({
     .default("postgresql://collabcode:collabcode@localhost:5432/collabcode"),
   PYTHON_IMAGE: z.string().default("collabcode-python-runner:latest"),
   EXECUTION_TIMEOUT_MS: z.coerce.number().int().positive().default(8000),
+  JWT_SECRET: z.string().min(16).default("change-me-super-secret-key"),
 });
 
 export const env = envSchema.parse(process.env);

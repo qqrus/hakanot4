@@ -2,7 +2,7 @@
 
 import { useMemo, useRef } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { Environment, Float, Sphere, Sparkles, Torus } from "@react-three/drei";
+import { Float, Sphere, Sparkles, Torus } from "@react-three/drei";
 import * as THREE from "three";
 
 type ExecutionStatus = "idle" | "running" | "success" | "error" | "timeout";
@@ -166,17 +166,16 @@ function RoomPlanet(props: HomeTechSceneProps) {
 
 export function HomeTechScene(props: HomeTechSceneProps) {
   return (
-    <div className="h-full min-h-[260px] w-full">
+    <div className="h-full min-h-[260px] w-full overflow-hidden rounded-[20px] bg-gradient-to-br from-slate-900/35 via-slate-800/20 to-accent/20">
       <Canvas
         dpr={[1, 1.5]}
-        camera={{ position: [0, 0, 4.2], fov: 42 }}
+        camera={{ position: [0, 0, 3.8], fov: 44 }}
         fallback={
           <div className="flex h-full min-h-[260px] items-center justify-center rounded-2xl bg-gradient-to-br from-accent/20 via-primary/15 to-success/20">
             <div className="h-20 w-20 animate-spin rounded-full border-4 border-accent/70 border-t-transparent" />
           </div>
         }
       >
-        <Environment preset="city" />
         <RoomPlanet {...props} />
       </Canvas>
     </div>

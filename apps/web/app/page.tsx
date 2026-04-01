@@ -18,6 +18,7 @@ import {
 import clsx from "clsx";
 
 import { DEMO_ROOM_ID } from "@collabcode/shared";
+import { getMyRooms, type PlatformRoom } from "../lib/platform-api";
 
 const HomeTechScene = dynamic(
   () => import("../components/ui/home-tech-scene").then((mod) => mod.HomeTechScene),
@@ -172,13 +173,57 @@ function getRowStatusTone(
 }
 
 export default function HomePage() {
-  const [roomId, setRoomId] = useState(DEMO_ROOM_ID);
+  const [roomId, setRoomId] = useState(() => {
+    if (typeof window === "undefined") {
+      return DEMO_ROOM_ID;
+    }
+    const fromQuery = new URLSearchParams(window.location.search).get("roomId")?.trim();
+    return fromQuery && fromQuery.length > 0 ? fromQuery : DEMO_ROOM_ID;
+  });
+  const [myRooms, setMyRooms] = useState<PlatformRoom[]>([]);
   const [plan] = useState("Команда Pro");
   const [explainMode, setExplainMode] = useState(true);
   const [metrics, setMetrics] = useState<HomeMetrics>(defaultMetrics);
   const [backendOnline, setBackendOnline] = useState(false);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string>(new Date().toISOString());
+
+  useEffect(() => {
+    let disposed = false;
+
+    const loadRooms = async (): Promise<void> => {
+      try {
+        const rooms = await getMyRooms();
+        if (!disposed) {
+          setMyRooms(rooms);
+        }
+      } catch {
+        if (!disposed) {
+          setMyRooms([]);
+        }
+      }
+    };
+
+    void loadRooms();
+
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const url = new URL(window.location.href);
+    const normalizedRoomId = roomId.trim();
+    if (normalizedRoomId.length === 0 || normalizedRoomId === DEMO_ROOM_ID) {
+      url.searchParams.delete("roomId");
+    } else {
+      url.searchParams.set("roomId", normalizedRoomId);
+    }
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  }, [roomId]);
 
   useEffect(() => {
     let disposed = false;
@@ -341,6 +386,25 @@ export default function HomePage() {
     return [...metricRows, ...eventRows];
   }, [metrics]);
 
+  const selectedRoomMeta = useMemo(() => {
+    if (roomId === DEMO_ROOM_ID) {
+      return { label: "Демо-комната", source: "demo" as const };
+    }
+    const matchedRoom = myRooms.find((room) => room.id === roomId);
+    if (matchedRoom) {
+      return { label: matchedRoom.title, source: "my-room" as const };
+    }
+    return { label: "Комната из ссылки", source: "link" as const };
+  }, [myRooms, roomId]);
+
+  const roomSelectOptions = useMemo(() => {
+    const options = [{ id: DEMO_ROOM_ID, title: "Демо-комната" }, ...myRooms.map((room) => ({ id: room.id, title: room.title }))];
+    if (roomId && !options.some((option) => option.id === roomId)) {
+      options.push({ id: roomId, title: "Комната из URL" });
+    }
+    return options;
+  }, [myRooms, roomId]);
+
   return (
     <main className="relative min-h-screen overflow-hidden px-4 py-5 lg:px-8">
       <div className="pointer-events-none absolute inset-0">
@@ -390,6 +454,12 @@ export default function HomePage() {
             >
               Открыть демо
             </Link>
+            <Link
+              href="/cabinet"
+              className="rounded-full border border-slate-200 bg-white px-4 py-2 text-[12px] font-bold uppercase tracking-wide text-slate-700 transition hover:border-accent hover:text-accent"
+            >
+              Кабинет
+            </Link>
           </div>
         </motion.header>
 
@@ -416,19 +486,51 @@ export default function HomePage() {
               </p>
 
               <div className="mt-8 grid gap-3 sm:grid-cols-[1fr_auto]">
-                <input
+                <select
                   id="roomId"
                   value={roomId}
                   onChange={(event) => setRoomId(event.target.value)}
                   className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-base font-medium text-slate-800 shadow-sm outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20"
-                  placeholder="demo-room"
-                />
+                >
+                  {roomSelectOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.title} ({option.id})
+                    </option>
+                  ))}
+                </select>
                 <Link
                   href={`/room/${encodeURIComponent(roomId || DEMO_ROOM_ID)}`}
                   className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-accent to-primary px-6 py-3 text-sm font-black uppercase tracking-wide text-white shadow-neon-pink transition hover:brightness-105"
                 >
                   Войти в комнату <ArrowUpRight size={16} />
                 </Link>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-bold text-slate-500">
+                  Источник данных
+                </span>
+                <span className="rounded-full border border-accent/30 bg-accent/10 px-3 py-1 text-[11px] font-black text-accent">
+                  {selectedRoomMeta.label}
+                </span>
+                <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-bold text-slate-700">
+                  {roomId}
+                </span>
+                <span
+                  className={clsx(
+                    "rounded-full px-3 py-1 text-[11px] font-bold",
+                    selectedRoomMeta.source === "my-room"
+                      ? "border border-success/30 bg-success/10 text-success"
+                      : selectedRoomMeta.source === "link"
+                        ? "border border-warning/30 bg-warning/10 text-warning"
+                        : "border border-slate-200 bg-white text-slate-600",
+                  )}
+                >
+                  {selectedRoomMeta.source === "my-room"
+                    ? "моя комната"
+                    : selectedRoomMeta.source === "link"
+                      ? "из URL"
+                      : "демо"}
+                </span>
               </div>
 
               <div className="mt-8 grid gap-3 sm:grid-cols-3">

@@ -2,7 +2,7 @@
 
 import { useRef, useMemo } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { Sphere, Environment, Float, Sparkles } from "@react-three/drei";
+import { Sphere, Float, Sparkles } from "@react-three/drei";
 import * as THREE from "three";
 
 interface PulseSphereProps {
@@ -67,17 +67,16 @@ function Scene({ activityLevel }: PulseSphereProps) {
 
 export function PulseSphere({ activityLevel = "idle" }: PulseSphereProps) {
   return (
-    <div className="w-full h-full min-h-[220px] relative pointer-events-none bg-gradient-to-br from-slate-900/8 via-white to-accent/10">
+    <div className="w-full h-full min-h-[220px] relative pointer-events-none overflow-hidden rounded-2xl bg-gradient-to-br from-slate-900/30 via-slate-800/10 to-accent/20">
       <Canvas
         dpr={[1, 1.5]}
-        camera={{ position: [0, 0, 4.5], fov: 45 }}
+        camera={{ position: [0, 0, 4.2], fov: 44 }}
         fallback={
           <div className="flex h-full min-h-[220px] items-center justify-center rounded-2xl">
             <div className="h-16 w-16 animate-pulse rounded-full bg-accent/30" />
           </div>
         }
       >
-        <Environment preset="apartment" />
         <Scene activityLevel={activityLevel} />
       </Canvas>
     </div>

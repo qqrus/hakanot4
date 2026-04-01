@@ -305,9 +305,9 @@ export function RoomClient({ roomId }: RoomClientProps) {
           </motion.div>
         )}
 
-        <section className="grid gap-6 xl:grid-cols-[1fr_400px]">
+        <section className="grid items-start gap-6 xl:grid-cols-[1fr_400px]">
           {/* Main IDE Area - Claymorphism Bento */}
-          <div className="grid gap-6 xl:grid-rows-[minmax(600px,1fr)_auto]">
+          <div className="grid gap-6 xl:grid-rows-[minmax(560px,1fr)_260px]">
             <motion.div 
               {...FADE_UP} transition={{ delay: 0.1 }}
               className="group relative flex flex-col overflow-hidden rounded-[2.5rem] border border-white bg-white/60 backdrop-blur-3xl shadow-panel transition-all hover:shadow-lg"
@@ -328,7 +328,7 @@ export function RoomClient({ roomId }: RoomClientProps) {
             </motion.div>
 
             {/* Terminal Panel */}
-            <motion.div {...FADE_UP} transition={{ delay: 0.2 }} className="rounded-[2rem] border border-white bg-white/70 p-6 shadow-panel backdrop-blur-2xl relative overflow-hidden">
+            <motion.div {...FADE_UP} transition={{ delay: 0.2 }} className="rounded-[2rem] border border-white bg-white/70 p-6 shadow-panel backdrop-blur-2xl relative overflow-hidden xl:sticky xl:bottom-3">
               <div className="flex items-center justify-between">
                 <h2 className="text-[11px] font-black uppercase tracking-[0.3em] text-slate-400 flex items-center gap-3">
                   <span className="w-2 h-2 bg-slate-300 rounded-full animate-pulse" /> Консоль
@@ -367,7 +367,7 @@ export function RoomClient({ roomId }: RoomClientProps) {
           </div>
 
           {/* Right Sidebar Bento Components */}
-          <aside className="grid gap-6 xl:grid-rows-[280px_auto_1fr]">
+          <aside className="grid gap-6 xl:grid-rows-[280px_420px_340px]">
             {/* 3D Glass AI Visualization */}
             <motion.div {...FADE_UP} transition={{ delay: 0.3 }} className="rounded-[2.5rem] border border-white bg-white/40 p-6 shadow-panel backdrop-blur-3xl relative overflow-hidden flex flex-col items-center justify-center group pointer-events-auto">
               {/* Soft spotlight behind the glass */}
@@ -425,14 +425,14 @@ export function RoomClient({ roomId }: RoomClientProps) {
             </motion.div>
 
             {/* Live Event Feed Bento */}
-            <motion.div {...FADE_UP} transition={{ delay: 0.5 }} className="rounded-[2.5rem] border border-white bg-white/70 p-6 shadow-panel backdrop-blur-2xl overflow-hidden flex flex-col">
+            <motion.div {...FADE_UP} transition={{ delay: 0.5 }} className="rounded-[2.5rem] border border-white bg-white/70 p-6 shadow-panel backdrop-blur-2xl overflow-hidden flex flex-col h-[340px]">
               <div className="flex items-center justify-between mb-5">
                 <h2 className="text-[11px] font-black uppercase tracking-[0.3em] text-primary">Лента событий</h2>
                 <div className="flex items-center gap-2">
                   <span className="w-2 h-2 bg-primary rounded-full shadow-[0_0_8px_rgba(251,113,133,0.6)] animate-pulse" />
                 </div>
               </div>
-              <div className="space-y-4 overflow-y-auto custom-scrollbar pr-2 flex-1">
+              <div className="space-y-4 overflow-y-auto custom-scrollbar pr-2 h-[250px]">
                 {events.length > 0 ? events.map((item) => (
                   <div key={item.id} className="relative pl-5 border-l-2 border-slate-200 py-1.5 ml-2">
                     <div className="absolute -left-[7px] top-3 w-3 h-3 rounded-full bg-white border-2 border-slate-300 shadow-sm" />

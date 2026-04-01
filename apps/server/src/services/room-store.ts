@@ -69,6 +69,7 @@ function createRoom(roomId: string): RoomState {
 class RoomStore {
   private readonly rooms = new Map<string, RoomState>();
   private readonly aiDebounceTimers = new Map<string, NodeJS.Timeout>();
+  private readonly lastEditEventAt = new Map<string, number>();
 
   getOrCreate(roomId: string): RoomState {
     const existingRoom = this.rooms.get(roomId);
@@ -117,14 +118,21 @@ class RoomStore {
     updateBase64: string,
     onAiStart?: () => void,
     onAiComplete?: (suggestions: AiSuggestion[], event?: SessionEvent) => void
-  ): Promise<{ event: SessionEvent; updatedParticipant?: Participant }> {
+  ): Promise<{ event?: SessionEvent; updatedParticipant?: Participant }> {
     const room = this.getOrCreate(roomId);
     const previousCode = room.text.toString();
     const update = Uint8Array.from(Buffer.from(updateBase64, "base64"));
     Y.applyUpdate(room.ydoc, update, "remote");
     const nextCode = room.text.toString();
 
-    const event = createEvent("edit", "Документ обновлен", actorId);
+    const throttleKey = `${roomId}:${actorId}`;
+    const now = Date.now();
+    const prevEditAt = this.lastEditEventAt.get(throttleKey) ?? 0;
+    const shouldEmitEditEvent = now - prevEditAt >= 3500;
+    const event = shouldEmitEditEvent ? createEvent("edit", "Документ обновлен", actorId) : undefined;
+    if (shouldEmitEditEvent) {
+      this.lastEditEventAt.set(throttleKey, now);
+    }
     
     // XP Awarding
     let updatedParticipant: Participant | undefined;
@@ -135,7 +143,9 @@ class RoomStore {
       updatedParticipant = nextP;
       room.events = [...rankEvents, ...room.events].slice(0, 50);
     }
-    room.events = [event, ...room.events].slice(0, 50);
+    if (event) {
+      room.events = [event, ...room.events].slice(0, 50);
+    }
 
     // Debounce AI logic (3 seconds of no typing)
     if (this.aiDebounceTimers.has(roomId)) {
@@ -219,6 +229,13 @@ class RoomStore {
 
   getSnapshot(roomId: string): RoomSnapshot {
     return this.toSnapshot(this.getOrCreate(roomId));
+  }
+
+  pushSystemEvent(roomId: string, message: string): SessionEvent {
+    const room = this.getOrCreate(roomId);
+    const event = createEvent("system", message);
+    room.events = [event, ...room.events].slice(0, 50);
+    return event;
   }
 
   private toSnapshot(room: RoomState): RoomSnapshot {
