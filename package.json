@@ -1,0 +1,21 @@
+{
+  "name": "collabcode-ai",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev --workspace @collabcode/server\" \"npm run dev --workspace @collabcode/web\"",
+    "build": "npm run build --workspaces",
+    "lint": "npm run lint --workspaces",
+    "typecheck": "npm run typecheck --workspaces",
+    "db:init": "npm run db:init --workspace @collabcode/server",
+    "seed": "npm run seed --workspace @collabcode/server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.8.3"
+  }
+}

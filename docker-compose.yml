@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: collabcode-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: collabcode
+      POSTGRES_USER: collabcode
+      POSTGRES_PASSWORD: collabcode
+    ports:
+      - "5433:5432"
+    volumes:
+      - collabcode-postgres:/var/lib/postgresql/data
+
+volumes:
+  collabcode-postgres:
