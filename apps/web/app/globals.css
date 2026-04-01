@@ -13,14 +13,14 @@
 html,
 body {
   margin: 0;
-  min-height: 100%;
+  min-height: 100vh;
+  /* Soft Aurora Light background for eye comfort */
   background:
-    radial-gradient(circle at top left, rgba(57, 208, 160, 0.14), transparent 28%),
-    radial-gradient(circle at top right, rgba(86, 140, 255, 0.12), transparent 30%),
-    linear-gradient(180deg, #07111f 0%, #091525 100%);
-  color: #eef6ff;
+    radial-gradient(circle at top right, rgba(56, 189, 248, 0.15), transparent 30%),
+    radial-gradient(circle at bottom left, rgba(251, 113, 133, 0.12), transparent 40%),
+    linear-gradient(135deg, #F8FAFC 0%, #F1F5F9 50%, #E2E8F0 100%);
+  color: #1E293B;
 }
-
 body {
   font-family: "Segoe UI", sans-serif;
 }

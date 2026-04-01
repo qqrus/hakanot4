@@ -20,6 +20,7 @@ interface CollaborationCallbacks {
   onRoomState: (snapshot: RoomSnapshot) => void;
   onEvent: (event: SessionEvent) => void;
   onAiSuggestions: (suggestions: RoomSnapshot["suggestions"]) => void;
+  onAiStatus: (isProcessing: boolean) => void;
   onTerminalLine: (line: TerminalLine) => void;
   onExecutionStatus: (terminal: RoomSnapshot["terminal"]) => void;
   onParticipantJoined: (participant: RoomSnapshot["participants"][number]) => void;
@@ -33,6 +34,11 @@ export interface CollaborationParticipant {
   name: string;
   color: string;
   avatar: string;
+  xp: number;
+  level: number;
+  rank: string;
+  isAnonymous: boolean;
+  achievements: string[];
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -202,6 +208,9 @@ export class CollaborationClient {
         break;
       case "ai-suggestions":
         this.callbacks.onAiSuggestions(message.payload);
+        break;
+      case "ai-status":
+        this.callbacks.onAiStatus(message.payload.isProcessing);
         break;
       case "terminal-line":
         this.callbacks.onTerminalLine(message.payload);

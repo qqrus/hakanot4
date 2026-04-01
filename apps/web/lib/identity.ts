@@ -7,6 +7,11 @@ export interface LocalIdentity {
   name: string;
   color: string;
   avatar: string;
+  xp: number;
+  level: number;
+  rank: string;
+  isAnonymous: boolean;
+  achievements: string[];
 }
 
 function createIdentity(): LocalIdentity {
@@ -18,6 +23,11 @@ function createIdentity(): LocalIdentity {
     name: `${animal} ${seed}`,
     color: colors[seed % colors.length] ?? colors[0],
     avatar: animal.slice(0, 2).toUpperCase(),
+    xp: 0,
+    level: 1,
+    rank: "Новичок",
+    isAnonymous: false,
+    achievements: [],
   };
 }
 
@@ -44,4 +54,11 @@ export function rotateLocalIdentity(): LocalIdentity | null {
   const identity = createIdentity();
   window.sessionStorage.setItem(storageKey, JSON.stringify(identity));
   return identity;
+}
+
+export function updateLocalIdentity(identity: LocalIdentity): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.sessionStorage.setItem(storageKey, JSON.stringify(identity));
 }

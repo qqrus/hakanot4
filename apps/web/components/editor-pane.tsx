@@ -48,7 +48,7 @@ export function EditorPane({ doc, awareness, language }: EditorPaneProps) {
       height="100%"
       defaultLanguage={language}
       defaultValue=""
-      theme="vs-dark"
+      theme="vs"
       onMount={(instance, monaco) => {
         void handleMount(instance, monaco);
       }}

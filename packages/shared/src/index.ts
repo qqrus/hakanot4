@@ -1,5 +1,5 @@
 export type ParticipantStatus = "online" | "offline";
-export type EventType = "join" | "leave" | "edit" | "run" | "ai" | "system";
+export type EventType = "join" | "leave" | "edit" | "run" | "ai" | "system" | "achievement" | "rank-up";
 export type SuggestionSeverity = "low" | "medium" | "high";
 export type ExecutionStatus = "idle" | "running" | "success" | "error" | "timeout";
 
@@ -10,6 +10,12 @@ export interface Participant {
   avatar: string;
   status: ParticipantStatus;
   lastSeenAt: string;
+  // Academic Rating
+  xp: number;
+  level: number;
+  rank: string;
+  isAnonymous: boolean;
+  achievements: string[];
 }
 
 export interface SessionEvent {
@@ -18,6 +24,7 @@ export interface SessionEvent {
   message: string;
   createdAt: string;
   participantId?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface AiSuggestion {
@@ -81,10 +88,12 @@ export type ServerMessage =
   | { type: "awareness"; payload: { update: string } }
   | { type: "participant-joined"; payload: Participant }
   | { type: "participant-left"; payload: { participantId: string } }
+  | { type: "participant-updated"; payload: Participant }
   | { type: "event"; payload: SessionEvent }
   | { type: "ai-suggestions"; payload: AiSuggestion[] }
   | { type: "execution-status"; payload: RoomSnapshot["terminal"] }
   | { type: "terminal-line"; payload: TerminalLine }
+  | { type: "ai-status"; payload: { isProcessing: boolean } }
   | { type: "error"; payload: { message: string } };
 
 export type ClientMessage =
@@ -93,7 +102,8 @@ export type ClientMessage =
   | { type: "doc-update"; payload: { roomId: string; update: string; actorId: string } }
   | { type: "awareness"; payload: { roomId: string; update: string } }
   | { type: "run-code"; payload: ExecutionRequest }
-  | { type: "ping"; payload: { roomId: string } };
+  | { type: "ping"; payload: { roomId: string } }
+  | { type: "set-anonymous"; payload: { roomId: string; participantId: string; isAnonymous: boolean } };
 
 export const DEMO_ROOM_ID = "demo-room";
 export const DEFAULT_FILE_NAME = "main.py";

@@ -13,7 +13,8 @@ import {
 
 import { createId } from "../lib/id.js";
 import { demoRoom, sampleCode } from "./demo-data.js";
-import { reviewCodeDiff } from "./mock-ai-reviewer.js";
+import { reviewCodeWithAi } from "./ai-service.js";
+import { gamificationService } from "./gamification-service.js";
 
 interface RoomState {
   roomId: string;
@@ -54,7 +55,7 @@ function createRoom(roomId: string): RoomState {
     ydoc,
     text,
     participants: new Map<string, Participant>(),
-    events: [createEvent("system", `Комната ${roomId} готова к совместной работе.`)],
+    events: [createEvent("system", `Академическая комната ${roomId} готова к работе.`)],
     suggestions: [],
     terminal: {
       status: "idle" as const,
@@ -67,6 +68,8 @@ function createRoom(roomId: string): RoomState {
 
 class RoomStore {
   private readonly rooms = new Map<string, RoomState>();
+  private readonly aiDebounceTimers = new Map<string, NodeJS.Timeout>();
+  private readonly lastEditEventAt = new Map<string, number>();
 
   getOrCreate(roomId: string): RoomState {
     const existingRoom = this.rooms.get(roomId);
@@ -109,24 +112,82 @@ class RoomStore {
     return event;
   }
 
-  applyDocUpdate(roomId: string, actorId: string, updateBase64: string): { event: SessionEvent; suggestions: AiSuggestion[] } {
+  async applyDocUpdate(
+    roomId: string,
+    actorId: string,
+    updateBase64: string,
+    onAiStart?: () => void,
+    onAiComplete?: (suggestions: AiSuggestion[], event?: SessionEvent) => void
+  ): Promise<{ event?: SessionEvent; updatedParticipant?: Participant }> {
     const room = this.getOrCreate(roomId);
     const previousCode = room.text.toString();
     const update = Uint8Array.from(Buffer.from(updateBase64, "base64"));
     Y.applyUpdate(room.ydoc, update, "remote");
     const nextCode = room.text.toString();
 
-    const event = createEvent("edit", "Документ обновлен", actorId);
-    room.suggestions = reviewCodeDiff({
-      roomId,
-      previousCode,
-      nextCode,
-      changedBy: actorId,
-    });
+    const throttleKey = `${roomId}:${actorId}`;
+    const now = Date.now();
+    const prevEditAt = this.lastEditEventAt.get(throttleKey) ?? 0;
+    const shouldEmitEditEvent = now - prevEditAt >= 3500;
+    const event = shouldEmitEditEvent ? createEvent("edit", "Документ обновлен", actorId) : undefined;
+    if (shouldEmitEditEvent) {
+      this.lastEditEventAt.set(throttleKey, now);
+    }
+    
+    // XP Awarding
+    let updatedParticipant: Participant | undefined;
+    const participant = room.participants.get(actorId);
+    if (participant) {
+      const { updatedParticipant: nextP, events: rankEvents } = gamificationService.awardXP(participant, 10);
+      room.participants.set(actorId, nextP);
+      updatedParticipant = nextP;
+      room.events = [...rankEvents, ...room.events].slice(0, 50);
+    }
+    if (event) {
+      room.events = [event, ...room.events].slice(0, 50);
+    }
 
-    const aiEvent = createEvent("ai", `AI reviewer обновил ${room.suggestions.length} подсказки`, actorId);
-    room.events = [aiEvent, event, ...room.events].slice(0, 50);
-    return { event, suggestions: room.suggestions };
+    // Debounce AI logic (3 seconds of no typing)
+    if (this.aiDebounceTimers.has(roomId)) {
+      clearTimeout(this.aiDebounceTimers.get(roomId)!);
+    }
+    
+    this.aiDebounceTimers.set(
+      roomId,
+      setTimeout(() => {
+        if (onAiStart) onAiStart();
+        
+        reviewCodeWithAi({
+          roomId,
+          previousCode,
+          nextCode,
+          changedBy: actorId,
+        }).then((suggestions) => {
+          room.suggestions = suggestions;
+          let aiEvent: SessionEvent | undefined;
+          if (suggestions.length > 0) {
+            aiEvent = createEvent("ai", `ИИ-ассистент обнаружил ${suggestions.length} зон для улучшения`, actorId);
+            room.events = [aiEvent, ...room.events].slice(0, 50);
+          }
+          if (onAiComplete) onAiComplete(suggestions, aiEvent);
+        }).catch(err => {
+          console.error(err);
+          if (onAiComplete) onAiComplete([], undefined);
+        });
+      }, 3000)
+    );
+
+    return { event, updatedParticipant };
+  }
+
+  setAnonymous(roomId: string, participantId: string, isAnonymous: boolean): Participant | null {
+    const room = this.rooms.get(roomId);
+    if (!room) return null;
+    const p = room.participants.get(participantId);
+    if (!p) return null;
+    const updated = { ...p, isAnonymous };
+    room.participants.set(participantId, updated);
+    return updated;
   }
 
   resetTerminal(roomId: string): RoomSnapshot["terminal"] {
@@ -168,6 +229,13 @@ class RoomStore {
 
   getSnapshot(roomId: string): RoomSnapshot {
     return this.toSnapshot(this.getOrCreate(roomId));
+  }
+
+  pushSystemEvent(roomId: string, message: string): SessionEvent {
+    const room = this.getOrCreate(roomId);
+    const event = createEvent("system", message);
+    room.events = [event, ...room.events].slice(0, 50);
+    return event;
   }
 
   private toSnapshot(room: RoomState): RoomSnapshot {
