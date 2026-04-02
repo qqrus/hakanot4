@@ -60,6 +60,14 @@ export interface PlatformRoomMetaResponse {
   };
 }
 
+export interface LeaderboardEntry {
+  userId: string;
+  name: string;
+  avatar: string;
+  totalXp: number;
+  eventsCount: number;
+}
+
 export function getAuthToken(): string | null {
   if (typeof window === "undefined") {
     return null;
@@ -194,5 +202,38 @@ export async function setAnonymousMode(
   await request(`/api/platform/rooms/${encodeURIComponent(roomId)}/anonymous`, {
     method: "POST",
     body: JSON.stringify({ isAnonymous }),
+  });
+}
+
+export async function getLeaderboard(params?: {
+  roomId?: string;
+  limit?: number;
+}): Promise<LeaderboardEntry[]> {
+  const query = new URLSearchParams();
+  if (params?.roomId) {
+    query.set("roomId", params.roomId);
+  }
+  if (params?.limit) {
+    query.set("limit", String(params.limit));
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  const result = await request<{ leaderboard: LeaderboardEntry[] }>(`/api/platform/leaderboard${suffix}`);
+  return result.leaderboard;
+}
+
+export async function askNavigator(roomId: string, question: string): Promise<{
+  answer: string;
+  source: "openrouter" | "mock";
+}> {
+  return request(`/api/platform/rooms/${encodeURIComponent(roomId)}/navigator`, {
+    method: "POST",
+    body: JSON.stringify({ question }),
+  });
+}
+
+export async function sendIntegrationTest(): Promise<void> {
+  await request("/api/platform/integrations/test", {
+    method: "POST",
+    body: JSON.stringify({}),
   });
 }

@@ -1,4 +1,5 @@
 import type { Participant, SessionEvent } from "@collabcode/shared";
+
 import { createId } from "../lib/id.js";
 
 const RANKS = [
@@ -22,21 +23,21 @@ export class GamificationService {
     return RANKS[index] ?? "Новичок";
   }
 
-  awardXP(participant: Participant, amount: number): { 
-    updatedParticipant: Participant; 
+  awardXP(participant: Participant, amount: number): {
+    updatedParticipant: Participant;
     events: SessionEvent[];
   } {
     const nextXp = participant.xp + amount;
     const nextLevel = this.calculateLevel(nextXp);
     const nextRank = this.getRank(nextLevel);
-    
+
     const events: SessionEvent[] = [];
-    
+
     const updated: Participant = {
       ...participant,
       xp: nextXp,
       level: nextLevel,
-      rank: nextRank ?? RANKS[0],
+      rank: nextRank,
     };
 
     if (nextLevel > participant.level) {
@@ -54,7 +55,7 @@ export class GamificationService {
 
   checkAchievements(participant: Participant, action: string): string[] {
     const newAchievements: string[] = [];
-    
+
     if (action === "fix-security" && !participant.achievements.includes("Security Expert")) {
       newAchievements.push("Security Expert");
     }

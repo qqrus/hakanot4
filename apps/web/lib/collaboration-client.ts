@@ -20,7 +20,7 @@ interface CollaborationCallbacks {
   onRoomState: (snapshot: RoomSnapshot) => void;
   onEvent: (event: SessionEvent) => void;
   onAiSuggestions: (suggestions: RoomSnapshot["suggestions"]) => void;
-  onAiStatus: (isProcessing: boolean) => void;
+  onAiStatus: (state: RoomSnapshot["ai"]) => void;
   onTerminalLine: (line: TerminalLine) => void;
   onExecutionStatus: (terminal: RoomSnapshot["terminal"]) => void;
   onParticipantJoined: (participant: RoomSnapshot["participants"][number]) => void;
@@ -31,6 +31,7 @@ interface CollaborationCallbacks {
 
 interface CollaborationOptions {
   canEdit?: boolean;
+  authToken?: string | null;
 }
 
 export interface CollaborationParticipant {
@@ -71,6 +72,7 @@ export class CollaborationClient {
   private readonly wsUrl: string;
   private readonly participant: CollaborationParticipant;
   private readonly canEdit: boolean;
+  private readonly authToken: string | null;
   private socket: WebSocket | null = null;
   private reconnectTimeout: number | null = null;
   private isDisposed = false;
@@ -87,6 +89,7 @@ export class CollaborationClient {
     this.participant = participant;
     this.callbacks = callbacks;
     this.canEdit = options?.canEdit ?? true;
+    this.authToken = options?.authToken ?? null;
 
     this.doc.on("update", (update, origin) => {
       if (origin === this) {
@@ -151,6 +154,7 @@ export class CollaborationClient {
         type: "join-room",
         payload: {
           roomId: this.roomId,
+          authToken: this.authToken ?? undefined,
           participant: {
             ...this.participant,
             status: "online",
@@ -220,7 +224,7 @@ export class CollaborationClient {
         this.callbacks.onAiSuggestions(message.payload);
         break;
       case "ai-status":
-        this.callbacks.onAiStatus(message.payload.isProcessing);
+        this.callbacks.onAiStatus(message.payload);
         break;
       case "terminal-line":
         this.callbacks.onTerminalLine(message.payload);

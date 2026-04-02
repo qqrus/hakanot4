@@ -22,6 +22,21 @@ export interface SandboxRunOptions {
 export async function runPythonInSandbox(
   options: SandboxRunOptions,
 ): Promise<ExecutionResult> {
+  if (/\binput\s*\(/.test(options.code)) {
+    const lines: TerminalLine[] = [];
+    const inputLine = createLine(
+      "system",
+      "input() недоступен в текущем sandbox-режиме (интерактивный stdin отключен). Используйте заранее заданные данные в коде.",
+    );
+    lines.push(inputLine);
+    options.onLine(inputLine);
+    return {
+      status: "error",
+      exitCode: null,
+      lines,
+    };
+  }
+
   return new Promise((resolve) => {
     const lines: TerminalLine[] = [];
     const args = [

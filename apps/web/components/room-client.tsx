@@ -6,6 +6,7 @@ import { startTransition, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 
 import {
+  DEMO_ROOM_ID,
   DEFAULT_LANGUAGE,
   type AiSuggestion,
   type Participant,
@@ -19,8 +20,7 @@ import {
   CollaborationClient,
   type CollaborationParticipant,
 } from "../lib/collaboration-client";
-import { getAuthToken, getRoomMeta } from "../lib/platform-api";
-import { getLocalIdentity, rotateLocalIdentity } from "../lib/identity";
+import { askNavigator, getAuthToken, getMe, getRoomMeta, joinRoomWithCode } from "../lib/platform-api";
 
 import { PulseSphere } from "./ui/pulse-sphere";
 import { AchievementToast } from "./ui/achievement-toast";
@@ -39,6 +39,7 @@ const EditorPane = dynamic(
 
 const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL ?? "http://localhost:4000";
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:4000";
+const PROFILE_COLORS = ["#38BDF8", "#22C55E", "#F97316", "#F43F5E", "#8B5CF6"] as const;
 
 interface RoomClientProps {
   roomId: string;
@@ -118,6 +119,15 @@ function getEventTypeLabel(type: SessionEvent["type"]): string {
   }
 }
 
+function getProfileColor(userId: string): string {
+  let hash = 0;
+  for (let index = 0; index < userId.length; index += 1) {
+    hash = (hash * 31 + userId.charCodeAt(index)) | 0;
+  }
+  const normalized = Math.abs(hash) % PROFILE_COLORS.length;
+  return PROFILE_COLORS[normalized] ?? PROFILE_COLORS[0];
+}
+
 export function RoomClient({ roomId }: RoomClientProps) {
   const [participant, setParticipant] = useState<CollaborationParticipant | null>(null);
   const [client, setClient] = useState<CollaborationClient | null>(null);
@@ -126,14 +136,65 @@ export function RoomClient({ roomId }: RoomClientProps) {
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [terminal, setTerminal] = useState<RoomSnapshot["terminal"]>(emptyTerminal);
+  const [aiState, setAiState] = useState<RoomSnapshot["ai"]>({
+    status: "idle",
+    source: "mock",
+    message: "Ожидание изменений кода.",
+    updatedAt: new Date().toISOString(),
+  });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [roomRole, setRoomRole] = useState<"owner" | "editor" | "viewer" | null>(null);
+  const [navigatorQuestion, setNavigatorQuestion] = useState("");
+  const [navigatorAnswer, setNavigatorAnswer] = useState<string | null>(null);
+  const [isNavigatorLoading, setIsNavigatorLoading] = useState(false);
 
   useEffect(() => {
-    setParticipant(getLocalIdentity());
+    let disposed = false;
+
+    async function resolveParticipant(): Promise<void> {
+      const token = getAuthToken();
+      if (!token) {
+        setErrorMessage("Нужна авторизация. Перенаправляем на страницу входа...");
+        window.setTimeout(() => {
+          window.location.href = "/auth";
+        }, 500);
+        return;
+      }
+
+      try {
+        const me = await getMe();
+        if (disposed) {
+          return;
+        }
+        setParticipant({
+          id: me.id,
+          name: me.name,
+          avatar: me.avatar,
+          color: getProfileColor(me.id),
+          xp: 0,
+          level: 1,
+          rank: "Участник",
+          isAnonymous: false,
+          achievements: [],
+        });
+      } catch {
+        if (disposed) {
+          return;
+        }
+        setErrorMessage("Сессия недействительна. Перенаправляем на страницу входа...");
+        window.setTimeout(() => {
+          window.location.href = "/auth";
+        }, 500);
+      }
+    }
+
+    void resolveParticipant();
+
+    return () => {
+      disposed = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -149,18 +210,23 @@ export function RoomClient({ roomId }: RoomClientProps) {
       setErrorMessage(null);
       setRoomRole(null);
 
-      const token = getAuthToken();
-      if (token) {
+      try {
+        const meta = await getRoomMeta(roomId);
+        resolvedRole = meta.membership.role;
+        setRoomRole(resolvedRole);
+      } catch {
         try {
+          await joinRoomWithCode(roomId);
           const meta = await getRoomMeta(roomId);
           resolvedRole = meta.membership.role;
           setRoomRole(resolvedRole);
-          activeParticipant = {
-            ...activeParticipant,
-            id: meta.membership.userId,
-          };
         } catch {
-          // Public/demo rooms can work without role metadata.
+          if (roomId === DEMO_ROOM_ID) {
+            resolvedRole = "editor";
+            setRoomRole("editor");
+          } else {
+            throw new Error("Нет доступа к комнате. Войдите через кабинет или код доступа.");
+          }
         }
       }
 
@@ -178,6 +244,7 @@ export function RoomClient({ roomId }: RoomClientProps) {
       setSuggestions(initialSnapshot.suggestions);
       setEvents(initialSnapshot.events);
       setTerminal(initialSnapshot.terminal);
+      setAiState(initialSnapshot.ai);
 
       activeClient = new CollaborationClient(roomId, WS_URL, activeParticipant, {
         onRoomState: (nextSnapshot) => {
@@ -187,6 +254,7 @@ export function RoomClient({ roomId }: RoomClientProps) {
             setSuggestions(nextSnapshot.suggestions);
             setEvents(nextSnapshot.events);
             setTerminal(nextSnapshot.terminal);
+            setAiState(nextSnapshot.ai);
           });
         },
         onEvent: (event) => {
@@ -198,8 +266,8 @@ export function RoomClient({ roomId }: RoomClientProps) {
         onAiSuggestions: (nextSuggestions) => {
           setSuggestions(nextSuggestions);
         },
-        onAiStatus: (isProcessing) => {
-          setIsAiProcessing(isProcessing);
+        onAiStatus: (state) => {
+          setAiState(state);
         },
         onTerminalLine: (line: TerminalLine) => {
           setTerminal((currentTerminal) => ({
@@ -234,6 +302,7 @@ export function RoomClient({ roomId }: RoomClientProps) {
         onConnectionChange: (nextConnected) => setConnected(nextConnected),
       }, {
         canEdit: resolvedRole !== "viewer",
+        authToken: getAuthToken(),
       });
 
       activeClient.connect();
@@ -255,10 +324,27 @@ export function RoomClient({ roomId }: RoomClientProps) {
 
   const aiActivityLevel = useMemo(() => {
     if (errorMessage) return "error";
-    if (isAiProcessing) return "active";
+    if (aiState.status === "processing") return "active";
+    if (aiState.status === "error") return "error";
+    if (aiState.status === "ready" || aiState.status === "fallback") return "active";
     return "idle";
-  }, [errorMessage, isAiProcessing]);
+  }, [aiState.status, errorMessage]);
   const isViewer = roomRole === "viewer";
+
+  const submitNavigatorQuestion = async (): Promise<void> => {
+    if (!navigatorQuestion.trim()) {
+      return;
+    }
+    setIsNavigatorLoading(true);
+    try {
+      const result = await askNavigator(roomId, navigatorQuestion.trim());
+      setNavigatorAnswer(result.answer);
+    } catch (error) {
+      setNavigatorAnswer(error instanceof Error ? error.message : "Не удалось получить ответ AI-навигатора.");
+    } finally {
+      setIsNavigatorLoading(false);
+    }
+  };
 
   return (
     <main className="min-h-screen px-4 py-5 font-sans relative overflow-hidden bg-transparent text-slate-800 lg:px-6">
@@ -302,15 +388,6 @@ export function RoomClient({ roomId }: RoomClientProps) {
                 {participantLabel}
               </span>
             </div>
-            <button
-              onClick={() => {
-                const nextIdentity = rotateLocalIdentity();
-                if (nextIdentity) setParticipant(nextIdentity);
-              }}
-              className="rounded-2xl bg-white border border-slate-100 px-5 py-2.5 text-[11px] font-black uppercase tracking-widest text-slate-500 transition-all hover:bg-slate-50 hover:text-slate-800 shadow-sm hover:shadow active:scale-95"
-            >
-              Сменить
-            </button>
             <button
               disabled={!client || !snapshot || isViewer}
               onClick={() => { if (isViewer) { return; } client?.runCode({ roomId, language: "python", code: client.doc.getText("monaco").toString() }); }}
@@ -399,13 +476,13 @@ export function RoomClient({ roomId }: RoomClientProps) {
           </div>
 
           {/* Right Sidebar Bento Components */}
-          <aside className="grid gap-6 xl:grid-rows-[280px_420px_340px]">
+          <aside className="grid gap-6">
             {/* 3D Glass AI Visualization */}
-            <motion.div {...FADE_UP} transition={{ delay: 0.3 }} className="rounded-[2.5rem] border border-white bg-white/40 p-6 shadow-panel backdrop-blur-3xl relative overflow-hidden flex flex-col items-center justify-center group pointer-events-auto">
+            <motion.div {...FADE_UP} transition={{ delay: 0.3 }} className="rounded-[2.5rem] border border-white bg-white/40 p-6 shadow-panel backdrop-blur-3xl relative overflow-hidden flex min-h-[280px] flex-col items-center justify-center group pointer-events-auto isolate">
               {/* Soft spotlight behind the glass */}
-              <div className={clsx("absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-32 h-32 rounded-full blur-3xl opacity-80 transition-all duration-1000", isAiProcessing ? "bg-accent scale-150" : "bg-white")} />
+              <div className={clsx("absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-32 h-32 rounded-full blur-3xl opacity-80 transition-all duration-1000", aiState.status === "processing" ? "bg-accent scale-150" : "bg-white")} />
               
-              <h2 className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-400 absolute top-6 left-6 z-10">
+              <h2 className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-500 absolute top-6 left-6 z-10">
                 ИИ-ассистент
               </h2>
               
@@ -417,8 +494,14 @@ export function RoomClient({ roomId }: RoomClientProps) {
                 Статус: <span className={clsx(
                   aiActivityLevel === 'active' ? 'text-accent animate-pulse' : 
                   aiActivityLevel === 'error' ? 'text-primary' : 'text-slate-500'
-                )}>{isAiProcessing ? "обработка..." : getAiActivityLabel(aiActivityLevel)}</span>
-                {isAiProcessing && <span className="w-1.5 h-1.5 rounded-full bg-accent animate-ping" />}
+                )}>
+                  {aiState.status === "processing"
+                    ? "обработка..."
+                    : aiState.status === "fallback"
+                      ? "локальный режим"
+                      : getAiActivityLabel(aiActivityLevel)}
+                </span>
+                {aiState.status === "processing" && <span className="w-1.5 h-1.5 rounded-full bg-accent animate-ping" />}
               </div>
             </motion.div>
 
@@ -453,6 +536,33 @@ export function RoomClient({ roomId }: RoomClientProps) {
                     <p className="text-sm font-semibold text-slate-500">Код соответствует текущим проверкам.</p>
                   </div>
                 )}
+              </div>
+            </motion.div>
+
+            {/* AI Navigator */}
+            <motion.div {...FADE_UP} transition={{ delay: 0.45 }} className="rounded-[2.5rem] border border-white bg-white/70 p-6 shadow-panel backdrop-blur-2xl">
+              <h2 className="text-[11px] font-black uppercase tracking-[0.3em] text-slate-400">AI-навигатор</h2>
+              <p className="mt-2 text-xs text-slate-500">Спроси, какой следующий шаг сделать по цели комнаты.</p>
+              <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+                Темп команды: скорость правок (edit-события/мин). Пропускная способность: сейчас считается тем же показателем, то есть edits/min.
+              </div>
+              <textarea
+                value={navigatorQuestion}
+                onChange={(event) => setNavigatorQuestion(event.target.value)}
+                rows={3}
+                placeholder="Например: как сейчас ускорить достижение цели комнаты?"
+                className="mt-3 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-accent"
+              />
+              <button
+                type="button"
+                onClick={() => void submitNavigatorQuestion()}
+                disabled={isNavigatorLoading || navigatorQuestion.trim().length === 0}
+                className="mt-3 rounded-xl bg-slate-800 px-4 py-2 text-[11px] font-black uppercase tracking-wide text-white disabled:opacity-50"
+              >
+                {isNavigatorLoading ? "Анализ..." : "Спросить навигатор"}
+              </button>
+              <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+                {navigatorAnswer ?? "Ответ появится здесь."}
               </div>
             </motion.div>
 

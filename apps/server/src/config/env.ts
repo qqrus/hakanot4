@@ -19,6 +19,10 @@ const envSchema = z.object({
   PYTHON_IMAGE: z.string().default("collabcode-python-runner:latest"),
   EXECUTION_TIMEOUT_MS: z.coerce.number().int().positive().default(8000),
   JWT_SECRET: z.string().min(16).default("change-me-super-secret-key"),
+  OPENROUTER_API_KEY: z.string().optional(),
+  TELEGRAM_BOT_TOKEN: z.string().optional(),
+  TELEGRAM_CHAT_ID: z.string().optional(),
+  DISCORD_WEBHOOK_URL: z.string().optional(),
 });
 
 export const env = envSchema.parse(process.env);

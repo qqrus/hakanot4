@@ -2,6 +2,8 @@ export type ParticipantStatus = "online" | "offline";
 export type EventType = "join" | "leave" | "edit" | "run" | "ai" | "system" | "achievement" | "rank-up";
 export type SuggestionSeverity = "low" | "medium" | "high";
 export type ExecutionStatus = "idle" | "running" | "success" | "error" | "timeout";
+export type AiStatusLevel = "idle" | "processing" | "ready" | "fallback" | "error";
+export type AiSource = "openrouter" | "mock";
 
 export interface Participant {
   id: string;
@@ -60,6 +62,12 @@ export interface RoomSnapshot {
     startedAt?: string;
     finishedAt?: string;
   };
+  ai: {
+    status: AiStatusLevel;
+    source: AiSource;
+    message: string;
+    updatedAt: string;
+  };
 }
 
 export interface ExecutionRequest {
@@ -93,11 +101,11 @@ export type ServerMessage =
   | { type: "ai-suggestions"; payload: AiSuggestion[] }
   | { type: "execution-status"; payload: RoomSnapshot["terminal"] }
   | { type: "terminal-line"; payload: TerminalLine }
-  | { type: "ai-status"; payload: { isProcessing: boolean } }
+  | { type: "ai-status"; payload: RoomSnapshot["ai"] }
   | { type: "error"; payload: { message: string } };
 
 export type ClientMessage =
-  | { type: "join-room"; payload: { roomId: string; participant: Participant } }
+  | { type: "join-room"; payload: { roomId: string; participant: Participant; authToken?: string } }
   | { type: "request-doc-state"; payload: { roomId: string } }
   | { type: "doc-update"; payload: { roomId: string; update: string; actorId: string } }
   | { type: "awareness"; payload: { roomId: string; update: string } }

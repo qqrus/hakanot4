@@ -1,0 +1,15 @@
+.git
+.gitignore
+.next
+.turbo
+.agents
+.augment
+.logs
+node_modules
+**/node_modules
+dist
+**/dist
+coverage
+*.log
+.env
+.env.local

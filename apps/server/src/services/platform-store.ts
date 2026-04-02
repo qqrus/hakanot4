@@ -457,6 +457,14 @@ export async function getMembership(roomId: string, userId: string): Promise<Roo
   };
 }
 
+export interface LeaderboardEntry {
+  userId: string;
+  name: string;
+  avatar: string;
+  totalXp: number;
+  eventsCount: number;
+}
+
 export async function listRoomMembers(roomId: string, requesterId: string): Promise<RoomMemberInfo[]> {
   const membership = await getMembership(roomId, requesterId);
   if (!membership) {
@@ -844,4 +852,65 @@ export async function listRunningRoomRuntimes(): Promise<RoomRuntime[]> {
     lastActivityAt: row.last_activity_at ? row.last_activity_at.toISOString() : null,
     warningSentAt: row.warning_sent_at ? row.warning_sent_at.toISOString() : null,
   }));
+}
+
+export async function addXpEvent(input: {
+  roomId: string;
+  userId: string;
+  points: number;
+  eventType: string;
+}): Promise<void> {
+  await query(
+    `
+      INSERT INTO xp_events (id, room_id, user_id, event_type, points)
+      VALUES ($1, $2, $3, $4, $5)
+    `,
+    [createId("xpe"), input.roomId, input.userId, input.eventType, input.points],
+  );
+}
+
+export async function getLeaderboard(input: {
+  roomId?: string;
+  limit?: number;
+}): Promise<LeaderboardEntry[]> {
+  const limit = Math.max(1, Math.min(input.limit ?? 20, 100));
+  const values: unknown[] = [];
+  let whereSql = "";
+  if (input.roomId) {
+    values.push(input.roomId);
+    whereSql = `WHERE x.room_id = $${values.length}`;
+  }
+  values.push(limit);
+
+  return query<{
+    user_id: string;
+    name: string;
+    avatar: string;
+    total_xp: number;
+    events_count: number;
+  }>(
+    `
+      SELECT
+        x.user_id,
+        u.name,
+        u.avatar,
+        COALESCE(SUM(x.points), 0)::int AS total_xp,
+        COUNT(*)::int AS events_count
+      FROM xp_events x
+      JOIN app_users u ON u.id = x.user_id
+      ${whereSql}
+      GROUP BY x.user_id, u.name, u.avatar
+      ORDER BY total_xp DESC, events_count DESC, u.name ASC
+      LIMIT $${values.length}
+    `,
+    values,
+  ).then((rows) =>
+    rows.map((row) => ({
+      userId: row.user_id,
+      name: row.name,
+      avatar: row.avatar,
+      totalXp: row.total_xp,
+      eventsCount: row.events_count,
+    })),
+  );
 }

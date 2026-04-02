@@ -12,8 +12,8 @@ import {
 } from "@collabcode/shared";
 
 import { createId } from "../lib/id.js";
-import { demoRoom, sampleCode } from "./demo-data.js";
 import { reviewCodeWithAi } from "./ai-service.js";
+import { demoRoom, sampleCode } from "./demo-data.js";
 import { gamificationService } from "./gamification-service.js";
 
 interface RoomState {
@@ -26,6 +26,7 @@ interface RoomState {
   events: SessionEvent[];
   suggestions: AiSuggestion[];
   terminal: RoomSnapshot["terminal"];
+  ai: RoomSnapshot["ai"];
 }
 
 function createEvent(
@@ -45,25 +46,28 @@ function createEvent(
 function createRoom(roomId: string): RoomState {
   const ydoc = new Y.Doc();
   const text = ydoc.getText("monaco");
-  const initialCode = roomId === DEMO_ROOM_ID ? sampleCode : sampleCode;
-  text.insert(0, initialCode);
+  text.insert(0, sampleCode);
 
-  const room = {
+  return {
     roomId,
     fileName: roomId === DEMO_ROOM_ID ? demoRoom.fileName : DEFAULT_FILE_NAME,
     language: roomId === DEMO_ROOM_ID ? demoRoom.language : DEFAULT_LANGUAGE,
     ydoc,
     text,
     participants: new Map<string, Participant>(),
-    events: [createEvent("system", `Академическая комната ${roomId} готова к работе.`)],
+    events: [createEvent("system", `Комната ${roomId} готова к работе.`)],
     suggestions: [],
     terminal: {
-      status: "idle" as const,
+      status: "idle",
       lines: [],
     },
-  } satisfies RoomState;
-
-  return room;
+    ai: {
+      status: "idle",
+      source: "mock",
+      message: "Ожидание изменений кода.",
+      updatedAt: new Date().toISOString(),
+    },
+  };
 }
 
 class RoomStore {
@@ -116,9 +120,9 @@ class RoomStore {
     roomId: string,
     actorId: string,
     updateBase64: string,
-    onAiStart?: () => void,
-    onAiComplete?: (suggestions: AiSuggestion[], event?: SessionEvent) => void
-  ): Promise<{ event?: SessionEvent; updatedParticipant?: Participant }> {
+    onAiStart?: (state: RoomSnapshot["ai"]) => void,
+    onAiComplete?: (state: RoomSnapshot["ai"], suggestions: AiSuggestion[], event?: SessionEvent) => void,
+  ): Promise<{ event?: SessionEvent; updatedParticipant?: Participant; xpDelta: number }> {
     const room = this.getOrCreate(roomId);
     const previousCode = room.text.toString();
     const update = Uint8Array.from(Buffer.from(updateBase64, "base64"));
@@ -133,59 +137,90 @@ class RoomStore {
     if (shouldEmitEditEvent) {
       this.lastEditEventAt.set(throttleKey, now);
     }
-    
-    // XP Awarding
+
     let updatedParticipant: Participant | undefined;
+    let xpDelta = 0;
     const participant = room.participants.get(actorId);
     if (participant) {
-      const { updatedParticipant: nextP, events: rankEvents } = gamificationService.awardXP(participant, 10);
-      room.participants.set(actorId, nextP);
-      updatedParticipant = nextP;
+      const { updatedParticipant: nextParticipant, events: rankEvents } = gamificationService.awardXP(participant, 10);
+      room.participants.set(actorId, nextParticipant);
+      updatedParticipant = nextParticipant;
+      xpDelta = 10;
       room.events = [...rankEvents, ...room.events].slice(0, 50);
     }
     if (event) {
       room.events = [event, ...room.events].slice(0, 50);
     }
 
-    // Debounce AI logic (3 seconds of no typing)
     if (this.aiDebounceTimers.has(roomId)) {
       clearTimeout(this.aiDebounceTimers.get(roomId)!);
     }
-    
+
     this.aiDebounceTimers.set(
       roomId,
       setTimeout(() => {
-        if (onAiStart) onAiStart();
-        
+        room.ai = {
+          status: "processing",
+          source: room.ai.source,
+          message: "ИИ анализирует последние изменения...",
+          updatedAt: new Date().toISOString(),
+        };
+        if (onAiStart) {
+          onAiStart(room.ai);
+        }
+
         reviewCodeWithAi({
           roomId,
           previousCode,
           nextCode,
           changedBy: actorId,
-        }).then((suggestions) => {
-          room.suggestions = suggestions;
-          let aiEvent: SessionEvent | undefined;
-          if (suggestions.length > 0) {
-            aiEvent = createEvent("ai", `ИИ-ассистент обнаружил ${suggestions.length} зон для улучшения`, actorId);
-            room.events = [aiEvent, ...room.events].slice(0, 50);
-          }
-          if (onAiComplete) onAiComplete(suggestions, aiEvent);
-        }).catch(err => {
-          console.error(err);
-          if (onAiComplete) onAiComplete([], undefined);
-        });
-      }, 3000)
+        })
+          .then((result) => {
+            room.suggestions = result.suggestions;
+            room.ai = {
+              status: result.status,
+              source: result.source,
+              message: result.message,
+              updatedAt: new Date().toISOString(),
+            };
+
+            let aiEvent: SessionEvent | undefined;
+            if (result.suggestions.length > 0) {
+              aiEvent = createEvent("ai", `ИИ-ассистент обнаружил ${result.suggestions.length} зон для улучшения`, actorId);
+              room.events = [aiEvent, ...room.events].slice(0, 50);
+            }
+            if (onAiComplete) {
+              onAiComplete(room.ai, result.suggestions, aiEvent);
+            }
+          })
+          .catch((error: unknown) => {
+            console.error(error);
+            room.ai = {
+              status: "error",
+              source: room.ai.source,
+              message: "Ошибка AI-анализа. Попробуйте снова.",
+              updatedAt: new Date().toISOString(),
+            };
+            if (onAiComplete) {
+              onAiComplete(room.ai, [], undefined);
+            }
+          });
+      }, 3000),
     );
 
-    return { event, updatedParticipant };
+    return { event, updatedParticipant, xpDelta };
   }
 
   setAnonymous(roomId: string, participantId: string, isAnonymous: boolean): Participant | null {
     const room = this.rooms.get(roomId);
-    if (!room) return null;
-    const p = room.participants.get(participantId);
-    if (!p) return null;
-    const updated = { ...p, isAnonymous };
+    if (!room) {
+      return null;
+    }
+    const participant = room.participants.get(participantId);
+    if (!participant) {
+      return null;
+    }
+    const updated = { ...participant, isAnonymous };
     room.participants.set(participantId, updated);
     return updated;
   }
@@ -231,6 +266,19 @@ class RoomStore {
     return this.toSnapshot(this.getOrCreate(roomId));
   }
 
+  getRecentContext(roomId: string): {
+    code: string;
+    recentEvents: string[];
+    recentSuggestions: string[];
+  } {
+    const room = this.getOrCreate(roomId);
+    return {
+      code: room.text.toString(),
+      recentEvents: room.events.slice(0, 10).map((item) => item.message),
+      recentSuggestions: room.suggestions.slice(0, 5).map((item) => `${item.title}: ${item.explanation}`),
+    };
+  }
+
   pushSystemEvent(roomId: string, message: string): SessionEvent {
     const room = this.getOrCreate(roomId);
     const event = createEvent("system", message);
@@ -247,6 +295,7 @@ class RoomStore {
       suggestions: room.suggestions,
       events: room.events,
       terminal: room.terminal,
+      ai: room.ai,
     };
   }
 }

@@ -1,10 +1,6 @@
 import http from "node:http";
 
-import {
-  type ClientMessage,
-  type Participant,
-  type ServerMessage,
-} from "@collabcode/shared";
+import { DEMO_ROOM_ID, type ClientMessage, type Participant, type ServerMessage } from "@collabcode/shared";
 import cors from "cors";
 import express from "express";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -13,12 +9,15 @@ import { z } from "zod";
 import { env } from "./config/env.js";
 import { createAuthToken, verifyAuthToken } from "./lib/auth-token.js";
 import { createId } from "./lib/id.js";
-import { roomStore } from "./services/room-store.js";
+import { getNavigatorAdvice } from "./services/ai-service.js";
+import { channelsConfigured, notifyChannels } from "./services/notification-service.js";
 import {
+  addXpEvent,
   createRoomForOwner,
   createUser,
   ensurePlatformSchema,
   findUserByEmail,
+  getLeaderboard,
   getMembership,
   getRoomById,
   getRoomRuntime,
@@ -36,74 +35,32 @@ import {
   updateRoomGoal,
   validatePassword,
 } from "./services/platform-store.js";
-import {
-  ensureRoomRuntimeArtifacts,
-  inspectRoomContainerStatus,
-  startRoomContainer,
-  stopRoomContainer,
-} from "./services/room-orchestrator.js";
+import { ensureRoomRuntimeArtifacts, inspectRoomContainerStatus, startRoomContainer, stopRoomContainer } from "./services/room-orchestrator.js";
+import { roomStore } from "./services/room-store.js";
 import { runPythonInSandbox } from "./services/sandbox-runner.js";
+
+type SocketRole = "owner" | "editor" | "viewer" | "demo";
+type SocketMeta = { roomId: string; participantId: string; userId: string | null; role: SocketRole };
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
-app.use((_request, response, next) => {
-  response.setHeader(
-    "Content-Security-Policy",
-    "default-src 'self'; connect-src 'self' ws: http: https:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval';",
-  );
-  response.setHeader("X-Content-Type-Options", "nosniff");
-  next();
-});
+app.get("/health", (_request, response) => response.json({ status: "ok" }));
 
-app.get("/health", (_request, response) => {
-  response.json({ status: "ok" });
-});
-
-const registerSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8),
-  name: z.string().min(2).max(60),
-});
-
-const loginSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8),
-});
-
-const createRoomSchema = z.object({
-  title: z.string().min(2).max(120),
-  goal: z.string().min(3).max(500),
-  visibility: z.enum(["open", "closed"]),
-  accessCode: z.string().min(4).max(64).optional(),
-});
-
-const joinRoomSchema = z.object({
-  accessCode: z.string().min(4).max(64).optional(),
-});
-
-const goalSchema = z.object({
-  goal: z.string().min(3).max(500),
-});
-
-const roleSchema = z.object({
-  targetUserId: z.string().min(3),
-  role: z.enum(["editor", "viewer"]),
-});
-
-const anonymousSchema = z.object({
-  isAnonymous: z.boolean(),
-});
+const registerSchema = z.object({ email: z.string().email(), password: z.string().min(8), name: z.string().min(2).max(60) });
+const loginSchema = z.object({ email: z.string().email(), password: z.string().min(8) });
+const createRoomSchema = z.object({ title: z.string().min(2).max(120), goal: z.string().min(3).max(500), visibility: z.enum(["open", "closed"]), accessCode: z.string().min(4).max(64).optional() });
+const joinRoomSchema = z.object({ accessCode: z.string().min(4).max(64).optional() });
+const goalSchema = z.object({ goal: z.string().min(3).max(500) });
+const roleSchema = z.object({ targetUserId: z.string().min(3), role: z.enum(["editor", "viewer"]) });
+const anonymousSchema = z.object({ isAnonymous: z.boolean() });
+const navigatorSchema = z.object({ question: z.string().min(3).max(500) });
 
 interface AuthenticatedRequest extends express.Request {
   auth?: { userId: string; email: string };
 }
 
-function requireAuth(
-  request: AuthenticatedRequest,
-  response: express.Response,
-  next: express.NextFunction,
-): void {
+function requireAuth(request: AuthenticatedRequest, response: express.Response, next: express.NextFunction): void {
   const header = request.headers.authorization;
   const token = header?.startsWith("Bearer ") ? header.slice(7) : null;
   if (!token) {
@@ -153,16 +110,7 @@ app.post("/api/auth/login", async (request, response) => {
       return;
     }
     const token = createAuthToken({ userId: user.id, email: user.email });
-    response.json({
-      token,
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        avatar: user.avatar,
-        createdAt: user.createdAt,
-      },
-    });
+    response.json({ token, user: { id: user.id, email: user.email, name: user.name, avatar: user.avatar, createdAt: user.createdAt } });
   } catch (error) {
     console.error("login failed:", error);
     response.status(500).json({ message: "Не удалось выполнить вход." });
@@ -170,17 +118,12 @@ app.post("/api/auth/login", async (request, response) => {
 });
 
 app.get("/api/auth/me", requireAuth, async (request: AuthenticatedRequest, response) => {
-  try {
-    const user = await getUserById(request.auth!.userId);
-    if (!user) {
-      response.status(404).json({ message: "Пользователь не найден." });
-      return;
-    }
-    response.json(user);
-  } catch (error) {
-    console.error("me failed:", error);
-    response.status(500).json({ message: "Не удалось получить профиль." });
+  const user = await getUserById(request.auth!.userId);
+  if (!user) {
+    response.status(404).json({ message: "Пользователь не найден." });
+    return;
   }
+  response.json(user);
 });
 
 app.get("/api/platform/rooms/my", requireAuth, async (request: AuthenticatedRequest, response) => {
@@ -189,10 +132,7 @@ app.get("/api/platform/rooms/my", requireAuth, async (request: AuthenticatedRequ
     const roomsWithLiveOnline = rooms.map((room) => {
       const snapshot = roomStore.getSnapshot(room.id);
       const onlineCount = snapshot.participants.filter((participant) => participant.status === "online").length;
-      return {
-        ...room,
-        onlineCount,
-      };
+      return { ...room, onlineCount };
     });
     response.json({ rooms: roomsWithLiveOnline });
   } catch (error) {
@@ -318,10 +258,8 @@ app.post("/api/platform/rooms/:roomId/runtime/start", requireAuth, async (reques
     });
     await startRoomContainer(runtimeMeta.containerId);
 
-    const runtime = await setRoomRuntimeStatusSystem({
-      roomId,
-      status: "running",
-    });
+    const runtime = await setRoomRuntimeStatusSystem({ roomId, status: "running" });
+    void notifyChannels(`🚀 Комната ${roomId}: runtime запущен.`).catch(() => undefined);
     response.json({ runtime });
   } catch (error) {
     response.status(403).json({ message: error instanceof Error ? error.message : "Не удалось запустить комнату." });
@@ -336,13 +274,9 @@ app.post("/api/platform/rooms/:roomId/runtime/stop", requireAuth, async (request
       ownerId: request.auth!.userId,
       status: "stopping",
     });
-
     await stopRoomContainer(runtimeMeta.containerId);
-
-    const runtime = await setRoomRuntimeStatusSystem({
-      roomId,
-      status: "stopped",
-    });
+    const runtime = await setRoomRuntimeStatusSystem({ roomId, status: "stopped" });
+    void notifyChannels(`🛑 Комната ${roomId}: runtime остановлен.`).catch(() => undefined);
     response.json({ runtime });
   } catch (error) {
     response.status(403).json({ message: error instanceof Error ? error.message : "Не удалось остановить комнату." });
@@ -372,7 +306,6 @@ app.get("/api/platform/rooms/:roomId/runtime/status", requireAuth, async (reques
       response.json({ runtime: await setRoomRuntimeStatusSystem({ roomId, status: "stopped" }) });
       return;
     }
-
     response.json({ runtime });
   } catch (error) {
     console.error("runtime status failed:", error);
@@ -421,6 +354,69 @@ app.get("/api/platform/rooms/:roomId/members", requireAuth, async (request: Auth
   }
 });
 
+app.get("/api/platform/leaderboard", requireAuth, async (request: AuthenticatedRequest, response) => {
+  const roomId = typeof request.query.roomId === "string" ? request.query.roomId : undefined;
+  const limitRaw = typeof request.query.limit === "string" ? Number.parseInt(request.query.limit, 10) : undefined;
+  try {
+    if (roomId) {
+      const membership = await getMembership(roomId, request.auth!.userId);
+      if (!membership) {
+        response.status(403).json({ message: "Нет доступа к лидерборду этой комнаты." });
+        return;
+      }
+    }
+    const leaderboard = await getLeaderboard({ roomId, limit: limitRaw });
+    response.json({ leaderboard });
+  } catch (error) {
+    response.status(500).json({ message: error instanceof Error ? error.message : "Не удалось загрузить лидерборд." });
+  }
+});
+
+app.post("/api/platform/rooms/:roomId/navigator", requireAuth, async (request: AuthenticatedRequest, response) => {
+  const roomId = String(request.params.roomId ?? "");
+  const parsed = navigatorSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ message: "Некорректный запрос к AI-навигатору." });
+    return;
+  }
+  const room = await getRoomById(roomId);
+  if (!room) {
+    response.status(404).json({ message: "Комната не найдена." });
+    return;
+  }
+  let membership = await getMembership(roomId, request.auth!.userId);
+  if (!membership && room.visibility === "open") {
+    membership = await joinRoom({
+      roomId,
+      userId: request.auth!.userId,
+    });
+  }
+  if (!membership) {
+    response.status(403).json({ message: "Нет доступа к этой комнате." });
+    return;
+  }
+
+  const context = roomStore.getRecentContext(roomId);
+  const result = await getNavigatorAdvice({
+    roomId,
+    goal: room.goal,
+    code: context.code,
+    recentEvents: context.recentEvents,
+    recentSuggestions: context.recentSuggestions,
+    question: parsed.data.question,
+  });
+  response.json(result);
+});
+
+app.post("/api/platform/integrations/test", requireAuth, async (request: AuthenticatedRequest, response) => {
+  if (!channelsConfigured()) {
+    response.status(400).json({ message: "Интеграции не настроены." });
+    return;
+  }
+  await notifyChannels(`✅ Тест уведомлений CollabCode от ${request.auth!.email}`);
+  response.json({ ok: true });
+});
+
 app.get("/api/rooms/:roomId", (request, response) => {
   const snapshot = roomStore.getSnapshot(request.params.roomId);
   response.json(snapshot);
@@ -430,171 +426,74 @@ app.get("/api/home/:roomId", (request, response) => {
   const snapshot = roomStore.getSnapshot(request.params.roomId);
   const now = Date.now();
   const participantById = new Map(snapshot.participants.map((item) => [item.id, item.name]));
-
-  const onlineParticipants = snapshot.participants.filter(
-    (participant) => participant.status === "online",
-  ).length;
+  const onlineParticipants = snapshot.participants.filter((participant) => participant.status === "online").length;
   const totalParticipants = snapshot.participants.length;
 
   const suggestionSeverity = snapshot.suggestions.reduce(
     (acc, item) => {
-      const current = acc[item.severity] ?? 0;
-      acc[item.severity] = current + 1;
+      acc[item.severity] = (acc[item.severity] ?? 0) + 1;
       return acc;
     },
     { low: 0, medium: 0, high: 0 },
   );
 
-  const editEvents = snapshot.events.filter((event) => event.type === "edit");
-  const aiEvents = snapshot.events.filter((event) => event.type === "ai");
-
   const trend = Array.from({ length: 12 }, () => 0);
-  for (const event of editEvents) {
+  for (const event of snapshot.events.filter((item) => item.type === "edit")) {
     const createdAt = new Date(event.createdAt).getTime();
-    if (Number.isNaN(createdAt)) {
-      continue;
-    }
+    if (Number.isNaN(createdAt)) continue;
     const diffMinutes = (now - createdAt) / 60000;
-    if (diffMinutes < 0 || diffMinutes >= 60) {
-      continue;
-    }
+    if (diffMinutes < 0 || diffMinutes >= 60) continue;
     const bin = 11 - Math.floor(diffMinutes / 5);
-    if (bin >= 0 && bin < trend.length) {
-      const current = trend[bin] ?? 0;
-      trend[bin] = current + 1;
-    }
+    if (bin >= 0 && bin < trend.length) trend[bin] = (trend[bin] ?? 0) + 1;
   }
-
-  const latestEditAt = editEvents
-    .map((event) => new Date(event.createdAt).getTime())
-    .filter((ts) => !Number.isNaN(ts))
-    .sort((a, b) => b - a)[0];
-  const latestAiAt = aiEvents
-    .map((event) => new Date(event.createdAt).getTime())
-    .filter((ts) => !Number.isNaN(ts))
-    .sort((a, b) => b - a)[0];
-
-  const aiReactionMs =
-    latestEditAt && latestAiAt && latestAiAt >= latestEditAt
-      ? latestAiAt - latestEditAt
-      : null;
-
   const editsLastHour = trend.reduce((sum, value) => sum + value, 0);
   const throughputPerMinute = Number((editsLastHour / 60).toFixed(2));
 
-  const high = suggestionSeverity.high;
-  const medium = suggestionSeverity.medium;
-  const low = suggestionSeverity.low;
-
-  const securityScore = Math.max(15, 100 - high * 20 - medium * 7);
-  const complexityScore = Math.max(20, 100 - medium * 12 - high * 9);
-  const readabilityScore = Math.max(25, 100 - low * 6 - medium * 8);
-  const performanceScore = (() => {
-    switch (snapshot.terminal.status) {
-      case "success":
-        return 90;
-      case "running":
-        return 74;
-      case "timeout":
-        return 45;
-      case "error":
-        return 54;
-      case "idle":
-      default:
-        return 82;
-    }
-  })();
-
-  const collaborationIndex =
-    totalParticipants > 0 ? onlineParticipants / totalParticipants : 0;
-  const suggestionLoad = Math.min(1, snapshot.suggestions.length / 6);
-  const recentEvents = snapshot.events.slice(0, 10).map((event) => {
-    const actorName = event.participantId ? participantById.get(event.participantId) : null;
-    const typeLabel = (() => {
-      switch (event.type) {
-        case "join":
-          return "Подключение";
-        case "leave":
-          return "Выход";
-        case "edit":
-          return "Правка";
-        case "run":
-          return "Запуск";
-        case "ai":
-          return "ИИ-ревью";
-        case "achievement":
-          return "Достижение";
-        case "rank-up":
-          return "Повышение";
-        case "system":
-        default:
-          return "Система";
-      }
-    })();
-
-    const risk = (() => {
-      if (event.type === "ai") {
-        if (suggestionSeverity.high > 0) return "high" as const;
-        if (suggestionSeverity.medium > 0) return "medium" as const;
-        return "low" as const;
-      }
-      if (event.type === "run" && (snapshot.terminal.status === "error" || snapshot.terminal.status === "timeout")) {
-        return "high" as const;
-      }
-      if (event.type === "system") return "medium" as const;
-      return "low" as const;
-    })();
-
-    const status = (() => {
-      if (event.type === "run") {
-        return snapshot.terminal.status;
-      }
-      if (event.type === "ai" && suggestionSeverity.high > 0) {
-        return "attention" as const;
-      }
-      return "ok" as const;
-    })();
-
-    return {
-      id: event.id,
-      type: event.type,
-      typeLabel,
-      message: event.message,
-      actorName,
-      createdAt: event.createdAt,
-      risk,
-      status,
-    };
-  });
+  const recentEvents = snapshot.events.slice(0, 10).map((event) => ({
+    id: event.id,
+    type: event.type,
+    typeLabel:
+      event.type === "join" ? "Подключение" :
+      event.type === "leave" ? "Выход" :
+      event.type === "edit" ? "Правка" :
+      event.type === "run" ? "Запуск" :
+      event.type === "ai" ? "ИИ-ревью" :
+      event.type === "achievement" ? "Достижение" :
+      event.type === "rank-up" ? "Повышение" : "Система",
+    message: event.message,
+    actorName: event.participantId ? participantById.get(event.participantId) ?? null : null,
+    createdAt: event.createdAt,
+    risk:
+      event.type === "ai" && suggestionSeverity.high > 0 ? "high" :
+      event.type === "ai" && suggestionSeverity.medium > 0 ? "medium" :
+      event.type === "run" && (snapshot.terminal.status === "error" || snapshot.terminal.status === "timeout") ? "high" :
+      event.type === "system" ? "medium" : "low",
+    status:
+      event.type === "run" ? snapshot.terminal.status :
+      event.type === "ai" && suggestionSeverity.high > 0 ? "attention" : "ok",
+  }));
 
   response.json({
     roomId: snapshot.roomId,
-    participants: {
-      online: onlineParticipants,
-      total: totalParticipants,
-    },
+    participants: { online: onlineParticipants, total: totalParticipants },
     ai: {
       suggestions: snapshot.suggestions.length,
       severity: suggestionSeverity,
-      reactionMs: aiReactionMs,
-      scores: {
-        security: securityScore,
-        complexity: complexityScore,
-        readability: readabilityScore,
-        performance: performanceScore,
-      },
+      source: snapshot.ai.source,
+      status: snapshot.ai.status,
+      statusMessage: snapshot.ai.message,
+      reactionMs: null,
+      scores: { security: 80, complexity: 78, readability: 85, performance: snapshot.terminal.status === "success" ? 90 : 74 },
     },
-    execution: {
-      status: snapshot.terminal.status,
-    },
+    execution: { status: snapshot.terminal.status },
     trend,
     throughputPerMinute,
     syncRate: totalParticipants > 0 ? Math.round((onlineParticipants / totalParticipants) * 100) : 100,
     model: "arcee-ai/trinity-large-preview",
     core: {
-      collaborationIndex,
-      suggestionLoad,
-      stabilityIndex: Math.min(1, (securityScore + performanceScore) / 200),
+      collaborationIndex: totalParticipants > 0 ? onlineParticipants / totalParticipants : 0,
+      suggestionLoad: Math.min(1, snapshot.suggestions.length / 6),
+      stabilityIndex: 0.8,
     },
     recentEvents,
   });
@@ -602,8 +501,15 @@ app.get("/api/home/:roomId", (request, response) => {
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
-const socketRooms = new Map<WebSocket, { roomId: string; participantId: string }>();
-let autoStopLock = false;
+const socketRooms = new Map<WebSocket, SocketMeta>();
+
+function canEdit(role: SocketRole): boolean {
+  return role === "owner" || role === "editor" || role === "demo";
+}
+
+function canRun(role: SocketRole): boolean {
+  return role === "owner" || role === "editor" || role === "demo";
+}
 
 function send(socket: WebSocket, message: ServerMessage): void {
   socket.send(JSON.stringify(message));
@@ -611,62 +517,39 @@ function send(socket: WebSocket, message: ServerMessage): void {
 
 function broadcast(roomId: string, message: ServerMessage, exceptParticipantId?: string): void {
   for (const [socket, metadata] of socketRooms.entries()) {
-    if (metadata.roomId !== roomId) {
-      continue;
-    }
-
-    if (exceptParticipantId && metadata.participantId === exceptParticipantId) {
-      continue;
-    }
-
+    if (metadata.roomId !== roomId) continue;
+    if (exceptParticipantId && metadata.participantId === exceptParticipantId) continue;
     send(socket, message);
   }
 }
 
 function touchRuntime(roomId: string): void {
-  void touchRoomRuntimeActivity(roomId).catch(() => {
-    // runtime meta может не существовать для демо-комнаты; игнорируем.
-  });
+  void touchRoomRuntimeActivity(roomId).catch(() => undefined);
 }
 
+let autoStopLock = false;
 async function runRuntimeAutoStopSweep(): Promise<void> {
-  if (autoStopLock) {
-    return;
-  }
+  if (autoStopLock) return;
   autoStopLock = true;
   try {
     const runtimes = await listRunningRoomRuntimes();
     const now = Date.now();
-    const warningThresholdMs = 13 * 60 * 1000;
-    const stopThresholdMs = 15 * 60 * 1000;
-
     for (const runtime of runtimes) {
       const lastActivityMs = runtime.lastActivityAt ? new Date(runtime.lastActivityAt).getTime() : now;
       const idleMs = now - lastActivityMs;
-
-      if (idleMs >= stopThresholdMs) {
+      if (idleMs >= 15 * 60 * 1000) {
         await stopRoomContainer(runtime.containerId);
         await setRoomRuntimeStatusSystem({ roomId: runtime.roomId, status: "stopped" });
         await markRoomRuntimeWarning(runtime.roomId, null);
-        const event = roomStore.pushSystemEvent(
-          runtime.roomId,
-          "Комната автоматически остановлена после 15 минут простоя.",
-        );
+        const event = roomStore.pushSystemEvent(runtime.roomId, "Комната автоматически остановлена после 15 минут простоя.");
         broadcast(runtime.roomId, { type: "event", payload: event });
-        continue;
-      }
-
-      if (idleMs >= warningThresholdMs && !runtime.warningSentAt) {
+        void notifyChannels(`⏱️ Комната ${runtime.roomId}: auto-stop после простоя.`).catch(() => undefined);
+      } else if (idleMs >= 13 * 60 * 1000 && !runtime.warningSentAt) {
         await markRoomRuntimeWarning(runtime.roomId, new Date());
-        const event = roomStore.pushSystemEvent(
-          runtime.roomId,
-          "Внимание: через 2 минуты без активности контейнер комнаты будет автоматически остановлен.",
-        );
+        const event = roomStore.pushSystemEvent(runtime.roomId, "Внимание: через 2 минуты без активности контейнер будет остановлен.");
         broadcast(runtime.roomId, { type: "event", payload: event });
       }
     }
-  } catch (error) {
-    console.error("auto-stop sweep failed:", error);
   } finally {
     autoStopLock = false;
   }
@@ -675,7 +558,6 @@ async function runRuntimeAutoStopSweep(): Promise<void> {
 wss.on("connection", (socket) => {
   socket.on("message", async (rawMessage) => {
     let message: ClientMessage;
-
     try {
       message = JSON.parse(rawMessage.toString()) as ClientMessage;
     } catch {
@@ -686,109 +568,131 @@ wss.on("connection", (socket) => {
     try {
       switch (message.type) {
         case "join-room": {
-          const platformRoom = await getRoomById(message.payload.roomId);
+          const roomId = message.payload.roomId;
+          const platformRoom = await getRoomById(roomId);
+          let role: SocketRole = "demo";
+          let userId: string | null = null;
+          let name = message.payload.participant.name;
+          let avatar = message.payload.participant.avatar;
+
           if (platformRoom) {
-            const runtime = await getRoomRuntime(message.payload.roomId);
-            if (!runtime || runtime.status !== "running") {
-              send(socket, {
-                type: "error",
-                payload: { message: "Комната создана, но контейнер не запущен. Попросите владельца запустить комнату в кабинете." },
-              });
+            const auth = message.payload.authToken ? verifyAuthToken(message.payload.authToken) : null;
+            if (!auth) {
+              send(socket, { type: "error", payload: { message: "Требуется авторизация для подключения к комнате." } });
               break;
             }
+            let membership = await getMembership(roomId, auth.userId);
+            if (!membership && platformRoom.visibility === "open") {
+              membership = await joinRoom({
+                roomId,
+                userId: auth.userId,
+              });
+            }
+            if (!membership) {
+              send(socket, { type: "error", payload: { message: "У вас нет доступа к этой комнате." } });
+              break;
+            }
+            const user = await getUserById(auth.userId);
+            if (!user) {
+              send(socket, { type: "error", payload: { message: "Пользователь не найден." } });
+              break;
+            }
+            const runtime = await getRoomRuntime(roomId);
+            if (!runtime || runtime.status !== "running") {
+              send(socket, { type: "error", payload: { message: "Runtime комнаты не запущен." } });
+              break;
+            }
+            role = membership.role;
+            userId = auth.userId;
+            name = membership.isAnonymous ? `Аноним-${user.avatar}` : user.name;
+            avatar = user.avatar;
+          } else if (roomId !== DEMO_ROOM_ID) {
+            send(socket, { type: "error", payload: { message: "Комната не найдена." } });
+            break;
           }
 
-          const currentSnapshot = roomStore.getSnapshot(message.payload.roomId);
+          const participantId = userId ?? message.payload.participant.id;
+          const currentSnapshot = roomStore.getSnapshot(roomId);
           const onlineNow = currentSnapshot.participants.filter((item) => item.status === "online");
-          const alreadyInRoom = onlineNow.some((item) => item.id === message.payload.participant.id);
+          const alreadyInRoom = onlineNow.some((item) => item.id === participantId);
           if (!alreadyInRoom && onlineNow.length >= 8) {
-            send(socket, {
-              type: "error",
-              payload: { message: "Лимит комнаты: одновременно не более 8 онлайн-участников." },
-            });
+            send(socket, { type: "error", payload: { message: "Лимит комнаты: не более 8 онлайн-участников." } });
             break;
           }
 
           const participant: Participant = {
             ...message.payload.participant,
+            id: participantId,
+            name,
+            avatar,
             status: "online",
             lastSeenAt: new Date().toISOString(),
           };
-          socketRooms.set(socket, {
-            roomId: message.payload.roomId,
-            participantId: participant.id,
-          });
-
-          const { snapshot, event } = roomStore.joinRoom(message.payload.roomId, participant);
-          touchRuntime(message.payload.roomId);
+          socketRooms.set(socket, { roomId, participantId, userId, role });
+          const { snapshot, event } = roomStore.joinRoom(roomId, participant);
+          touchRuntime(roomId);
           send(socket, { type: "room-state", payload: snapshot });
-          send(socket, {
-            type: "doc-state",
-            payload: { update: roomStore.getEncodedState(message.payload.roomId) },
-          });
-          broadcast(message.payload.roomId, { type: "participant-joined", payload: participant }, participant.id);
-          broadcast(message.payload.roomId, { type: "event", payload: event }, participant.id);
+          send(socket, { type: "doc-state", payload: { update: roomStore.getEncodedState(roomId) } });
+          broadcast(roomId, { type: "participant-joined", payload: participant }, participant.id);
+          broadcast(roomId, { type: "event", payload: event }, participant.id);
           break;
         }
-
-        case "request-doc-state": {
-          touchRuntime(message.payload.roomId);
-          send(socket, {
-            type: "doc-state",
-            payload: { update: roomStore.getEncodedState(message.payload.roomId) },
-          });
+        case "request-doc-state":
+          send(socket, { type: "doc-state", payload: { update: roomStore.getEncodedState(message.payload.roomId) } });
           break;
-        }
-
         case "doc-update": {
-          touchRuntime(message.payload.roomId);
-          const { event, updatedParticipant } = await roomStore.applyDocUpdate(
+          const meta = socketRooms.get(socket);
+          if (!meta || meta.roomId !== message.payload.roomId) {
+            send(socket, { type: "error", payload: { message: "Сначала подключитесь к комнате." } });
+            break;
+          }
+          if (!canEdit(meta.role)) {
+            send(socket, { type: "error", payload: { message: "Роль viewer не может редактировать код." } });
+            break;
+          }
+          if (message.payload.actorId !== meta.participantId) {
+            send(socket, { type: "error", payload: { message: "Неверный actorId." } });
+            break;
+          }
+          const { event, updatedParticipant, xpDelta } = await roomStore.applyDocUpdate(
             message.payload.roomId,
             message.payload.actorId,
             message.payload.update,
-            // onAiStart
-            () => {
-              broadcast(message.payload.roomId, { type: "ai-status", payload: { isProcessing: true } });
-            },
-            // onAiComplete
-            (suggestions, aiEvent) => {
+            (state) => broadcast(message.payload.roomId, { type: "ai-status", payload: state }),
+            (state, suggestions, aiEvent) => {
+              broadcast(message.payload.roomId, { type: "ai-status", payload: state });
               broadcast(message.payload.roomId, { type: "ai-suggestions", payload: suggestions });
-              if (aiEvent) {
-                broadcast(message.payload.roomId, { type: "event", payload: aiEvent });
+              if (aiEvent) broadcast(message.payload.roomId, { type: "event", payload: aiEvent });
+              if (suggestions.some((item) => item.severity === "high")) {
+                void notifyChannels(`⚠️ Комната ${message.payload.roomId}: AI обнаружил критические замечания.`).catch(() => undefined);
               }
-              broadcast(message.payload.roomId, { type: "ai-status", payload: { isProcessing: false } });
-            }
-          );
-          broadcast(message.payload.roomId, {
-            type: "doc-update",
-            payload: {
-              update: message.payload.update,
-              actorId: message.payload.actorId,
             },
-          }, message.payload.actorId);
-          if (event) {
-            broadcast(message.payload.roomId, { type: "event", payload: event });
+          );
+          if (xpDelta > 0 && meta.userId) {
+            void addXpEvent({ roomId: message.payload.roomId, userId: meta.userId, points: xpDelta, eventType: "edit" }).catch(
+              (error) => console.error("xp event insert failed:", error),
+            );
           }
-          if (updatedParticipant) {
-            broadcast(message.payload.roomId, { type: "participant-updated", payload: updatedParticipant });
-          }
+          broadcast(message.payload.roomId, { type: "doc-update", payload: { update: message.payload.update, actorId: message.payload.actorId } }, message.payload.actorId);
+          if (event) broadcast(message.payload.roomId, { type: "event", payload: event });
+          if (updatedParticipant) broadcast(message.payload.roomId, { type: "participant-updated", payload: updatedParticipant });
           break;
         }
-
-        case "awareness": {
-          touchRuntime(message.payload.roomId);
-          broadcast(message.payload.roomId, {
-            type: "awareness",
-            payload: { update: message.payload.update },
-          });
+        case "awareness":
+          broadcast(message.payload.roomId, { type: "awareness", payload: { update: message.payload.update } });
           break;
-        }
-
         case "run-code": {
-          touchRuntime(message.payload.roomId);
+          const meta = socketRooms.get(socket);
+          if (!meta || meta.roomId !== message.payload.roomId) {
+            send(socket, { type: "error", payload: { message: "Сначала подключитесь к комнате." } });
+            break;
+          }
+          if (!canRun(meta.role)) {
+            send(socket, { type: "error", payload: { message: "Роль viewer не может запускать код." } });
+            break;
+          }
           const terminalState = roomStore.resetTerminal(message.payload.roomId);
           broadcast(message.payload.roomId, { type: "execution-status", payload: terminalState });
-
           const result = await runPythonInSandbox({
             code: message.payload.code,
             onLine: (line) => {
@@ -797,31 +701,23 @@ wss.on("connection", (socket) => {
               broadcast(message.payload.roomId, { type: "execution-status", payload: terminal });
             },
           });
-
           const finishedTerminal = roomStore.finishExecution(message.payload.roomId, result.status);
           broadcast(message.payload.roomId, { type: "execution-status", payload: finishedTerminal });
           break;
         }
-
         case "set-anonymous": {
-          touchRuntime(message.payload.roomId);
-          const updated = roomStore.setAnonymous(message.payload.roomId, message.payload.participantId, message.payload.isAnonymous);
-          if (updated) {
-            broadcast(message.payload.roomId, { type: "participant-updated", payload: updated });
+          const meta = socketRooms.get(socket);
+          if (!meta || !meta.userId || meta.userId !== message.payload.participantId) {
+            send(socket, { type: "error", payload: { message: "Можно менять инкогнито только для своего профиля." } });
+            break;
           }
+          const updated = roomStore.setAnonymous(message.payload.roomId, message.payload.participantId, message.payload.isAnonymous);
+          if (updated) broadcast(message.payload.roomId, { type: "participant-updated", payload: updated });
           break;
         }
-
-        case "ping": {
-          touchRuntime(message.payload.roomId);
-          send(socket, { type: "event", payload: {
-            id: createId("evt"),
-            type: "system",
-            message: "Подключение активно",
-            createdAt: new Date().toISOString(),
-          } });
+        case "ping":
+          send(socket, { type: "event", payload: { id: createId("evt"), type: "system", message: "Подключение активно", createdAt: new Date().toISOString() } });
           break;
-        }
       }
     } catch (error) {
       const messageText = error instanceof Error ? error.message : "Неизвестная ошибка сервера.";
@@ -831,21 +727,12 @@ wss.on("connection", (socket) => {
 
   socket.on("close", () => {
     const metadata = socketRooms.get(socket);
-    if (!metadata) {
-      return;
-    }
-
+    if (!metadata) return;
     socketRooms.delete(socket);
     touchRuntime(metadata.roomId);
     const event = roomStore.leaveRoom(metadata.roomId, metadata.participantId);
-    if (!event) {
-      return;
-    }
-
-    broadcast(metadata.roomId, {
-      type: "participant-left",
-      payload: { participantId: metadata.participantId },
-    });
+    if (!event) return;
+    broadcast(metadata.roomId, { type: "participant-left", payload: { participantId: metadata.participantId } });
     broadcast(metadata.roomId, { type: "event", payload: event });
   });
 });

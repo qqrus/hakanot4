@@ -12,6 +12,7 @@ import {
   createRoom,
   getMe,
   getMyRooms,
+  getLeaderboard,
   getRoomMembers,
   joinRoomWithCode,
   setAnonymousMode,
@@ -19,6 +20,7 @@ import {
   type AuthUser,
   type PlatformRoom,
   type PlatformRoomMember,
+  type LeaderboardEntry,
   startRoom,
   stopRoom,
   updateGoal,
@@ -31,6 +33,8 @@ export default function CabinetPage() {
   const [membersByRoom, setMembersByRoom] = useState<Record<string, PlatformRoomMember[]>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  const [leaderboardRoomId, setLeaderboardRoomId] = useState("");
   const [updatingRoleKey, setUpdatingRoleKey] = useState<string | null>(null);
   const [updatingAnonymousRoomId, setUpdatingAnonymousRoomId] = useState<string | null>(null);
 
@@ -51,6 +55,16 @@ export default function CabinetPage() {
       const membersEntries = await Promise.all(
         myRooms.map(async (room) => [room.id, await getRoomMembers(room.id)] as const),
       );
+      const targetLeaderboardRoomId =
+        leaderboardRoomId && myRooms.some((room) => room.id === leaderboardRoomId)
+          ? leaderboardRoomId
+          : (myRooms[0]?.id ?? "");
+      const leaderboardData = targetLeaderboardRoomId
+        ? await getLeaderboard({
+            roomId: targetLeaderboardRoomId,
+            limit: 10,
+          })
+        : [];
       const nextMembersByRoom: Record<string, PlatformRoomMember[]> = {};
       for (const [roomId, members] of membersEntries) {
         nextMembersByRoom[roomId] = members;
@@ -59,6 +73,8 @@ export default function CabinetPage() {
       setUser(me);
       setRooms(myRooms);
       setMembersByRoom(nextMembersByRoom);
+      setLeaderboard(leaderboardData);
+      setLeaderboardRoomId(targetLeaderboardRoomId);
     } catch (error) {
       clearToken();
       router.push("/auth");
@@ -70,7 +86,7 @@ export default function CabinetPage() {
 
   useEffect(() => {
     void load();
-  }, []);
+  }, [leaderboardRoomId]);
 
   const submitCreate = async (): Promise<void> => {
     setIsCreating(true);
@@ -432,6 +448,50 @@ export default function CabinetPage() {
               )}
             </div>
           </article>
+        </section>
+
+        <section className="rounded-[28px] border border-white/80 bg-white/70 p-5 shadow-panel backdrop-blur-2xl">
+          <h2 className="text-lg font-black text-ink">Лидерборд комнаты</h2>
+          <p className="mt-1 text-sm text-slate-500">Рейтинг формируется по XP за активность в коде.</p>
+          <div className="mt-3">
+            <label htmlFor="leaderboard-room" className="text-[11px] font-black uppercase tracking-wide text-slate-500">
+              Комната для подсчёта
+            </label>
+            <select
+              id="leaderboard-room"
+              value={leaderboardRoomId}
+              onChange={(event) => setLeaderboardRoomId(event.target.value)}
+              className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 outline-none focus:border-accent"
+            >
+              {rooms.map((room) => (
+                <option key={room.id} value={room.id}>
+                  {room.title} ({room.id})
+                </option>
+              ))}
+              {rooms.length === 0 && <option value="">Нет доступных комнат</option>}
+            </select>
+          </div>
+          <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white/90">
+            <div className="grid grid-cols-[64px_1fr_120px_120px] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 text-[11px] font-black uppercase tracking-wide text-slate-500">
+              <span>Место</span>
+              <span>Участник</span>
+              <span>XP</span>
+              <span>Событий</span>
+            </div>
+            <div className="divide-y divide-slate-100">
+              {leaderboard.map((item, index) => (
+                <div key={item.userId} className="grid grid-cols-[64px_1fr_120px_120px] gap-3 px-4 py-3 text-sm">
+                  <span className="font-black text-slate-700">{index + 1}</span>
+                  <span className="font-semibold text-slate-700">{item.name}</span>
+                  <span className="font-black text-accent">{item.totalXp}</span>
+                  <span className="font-semibold text-slate-600">{item.eventsCount}</span>
+                </div>
+              ))}
+              {leaderboard.length === 0 && (
+                <div className="px-4 py-6 text-sm font-medium text-slate-500">Пока нет данных для лидерборда.</div>
+              )}
+            </div>
+          </div>
         </section>
 
         {errorMessage && (
