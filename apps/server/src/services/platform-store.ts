@@ -54,6 +54,14 @@ export interface RoomRuntime {
   warningSentAt: string | null;
 }
 
+export interface RoomIntegrationSettings {
+  roomId: string;
+  telegramChatId: string | null;
+  discordWebhookUrl: string | null;
+  discordNickname: string | null;
+  updatedAt: string;
+}
+
 function hashValue(value: string): string {
   const salt = randomBytes(16).toString("hex");
   const hash = scryptSync(value, salt, 64).toString("hex");
@@ -139,6 +147,29 @@ export async function ensurePlatformSchema(): Promise<void> {
       event_type TEXT NOT NULL,
       points INTEGER NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS user_achievements (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+      room_id TEXT REFERENCES room_meta(id) ON DELETE SET NULL,
+      code TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      awarded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id, code)
+    );
+  `);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS room_integrations (
+      room_id TEXT PRIMARY KEY REFERENCES room_meta(id) ON DELETE CASCADE,
+      telegram_chat_id TEXT,
+      discord_webhook_url TEXT,
+      discord_nickname TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
 }
@@ -457,12 +488,149 @@ export async function getMembership(roomId: string, userId: string): Promise<Roo
   };
 }
 
+export async function getRoomIntegrationsByRoom(roomId: string): Promise<RoomIntegrationSettings> {
+  const rows = await query<{
+    room_id: string;
+    telegram_chat_id: string | null;
+    discord_webhook_url: string | null;
+    discord_nickname: string | null;
+    updated_at: Date;
+  }>(
+    `
+      SELECT room_id, telegram_chat_id, discord_webhook_url, discord_nickname, updated_at
+      FROM room_integrations
+      WHERE room_id = $1
+      LIMIT 1
+    `,
+    [roomId],
+  );
+  const row = rows[0];
+  if (!row) {
+    return {
+      roomId,
+      telegramChatId: null,
+      discordWebhookUrl: null,
+      discordNickname: null,
+      updatedAt: new Date(0).toISOString(),
+    };
+  }
+  return {
+    roomId: row.room_id,
+    telegramChatId: row.telegram_chat_id,
+    discordWebhookUrl: row.discord_webhook_url,
+    discordNickname: row.discord_nickname,
+    updatedAt: row.updated_at.toISOString(),
+  };
+}
+
+export async function getRoomIntegrationsForUser(input: {
+  roomId: string;
+  userId: string;
+}): Promise<RoomIntegrationSettings> {
+  const membership = await getMembership(input.roomId, input.userId);
+  if (!membership) {
+    throw new Error("Нет доступа к интеграциям этой комнаты.");
+  }
+  return getRoomIntegrationsByRoom(input.roomId);
+}
+
+export async function updateRoomIntegrations(input: {
+  roomId: string;
+  ownerId: string;
+  telegramChatId?: string | null;
+  discordWebhookUrl?: string | null;
+  discordNickname?: string | null;
+}): Promise<RoomIntegrationSettings> {
+  const room = await getRoomById(input.roomId);
+  if (!room || room.ownerId !== input.ownerId) {
+    throw new Error("Интеграции комнаты может менять только владелец.");
+  }
+
+  const telegramChatId = input.telegramChatId?.trim() ? input.telegramChatId.trim() : null;
+  const discordWebhookUrl = input.discordWebhookUrl?.trim() ? input.discordWebhookUrl.trim() : null;
+  const discordNickname = input.discordNickname?.trim() ? input.discordNickname.trim() : null;
+
+  const rows = await query<{
+    room_id: string;
+    telegram_chat_id: string | null;
+    discord_webhook_url: string | null;
+    discord_nickname: string | null;
+    updated_at: Date;
+  }>(
+    `
+      INSERT INTO room_integrations (room_id, telegram_chat_id, discord_webhook_url, discord_nickname, updated_at)
+      VALUES ($1, $2, $3, $4, NOW())
+      ON CONFLICT (room_id) DO UPDATE
+      SET
+        telegram_chat_id = EXCLUDED.telegram_chat_id,
+        discord_webhook_url = EXCLUDED.discord_webhook_url,
+        discord_nickname = EXCLUDED.discord_nickname,
+        updated_at = NOW()
+      RETURNING room_id, telegram_chat_id, discord_webhook_url, discord_nickname, updated_at
+    `,
+    [input.roomId, telegramChatId, discordWebhookUrl, discordNickname],
+  );
+
+  const row = rows[0];
+  if (!row) {
+    throw new Error("Не удалось сохранить интеграции комнаты.");
+  }
+  return {
+    roomId: row.room_id,
+    telegramChatId: row.telegram_chat_id,
+    discordWebhookUrl: row.discord_webhook_url,
+    discordNickname: row.discord_nickname,
+    updatedAt: row.updated_at.toISOString(),
+  };
+}
+
 export interface LeaderboardEntry {
   userId: string;
   name: string;
   avatar: string;
   totalXp: number;
   eventsCount: number;
+  level: number;
+  rank: string;
+  achievementsCount: number;
+}
+
+export interface UserAchievement {
+  id: string;
+  userId: string;
+  roomId: string | null;
+  code: string;
+  title: string;
+  description: string;
+  awardedAt: string;
+}
+
+export interface GamificationSummary {
+  totalXp: number;
+  eventsCount: number;
+  level: number;
+  rank: string;
+  nextLevelXp: number;
+  achievements: UserAchievement[];
+}
+
+const XP_PER_LEVEL = 1000;
+const RANKS = [
+  "Новичок",
+  "Подмастерье",
+  "Программист",
+  "Системный аналитик",
+  "Ведущий разработчик",
+  "Архитектор",
+];
+
+function calculateLevelByXp(xp: number): number {
+  return Math.floor(xp / XP_PER_LEVEL) + 1;
+}
+
+function rankByLevel(level: number): string {
+  const index = Math.min(Math.floor((level - 1) / 2), RANKS.length - 1);
+  return RANKS[index] ?? "Новичок";
 }
 
 export async function listRoomMembers(roomId: string, requesterId: string): Promise<RoomMemberInfo[]> {
@@ -888,6 +1056,7 @@ export async function getLeaderboard(input: {
     avatar: string;
     total_xp: number;
     events_count: number;
+    achievements_count: number;
   }>(
     `
       SELECT
@@ -895,7 +1064,12 @@ export async function getLeaderboard(input: {
         u.name,
         u.avatar,
         COALESCE(SUM(x.points), 0)::int AS total_xp,
-        COUNT(*)::int AS events_count
+        COUNT(*)::int AS events_count,
+        COALESCE((
+          SELECT COUNT(*)::int
+          FROM user_achievements a
+          WHERE a.user_id = x.user_id
+        ), 0)::int AS achievements_count
       FROM xp_events x
       JOIN app_users u ON u.id = x.user_id
       ${whereSql}
@@ -911,6 +1085,131 @@ export async function getLeaderboard(input: {
       avatar: row.avatar,
       totalXp: row.total_xp,
       eventsCount: row.events_count,
+      level: calculateLevelByXp(row.total_xp),
+      rank: rankByLevel(calculateLevelByXp(row.total_xp)),
+      achievementsCount: row.achievements_count,
     })),
   );
+}
+
+export async function awardAchievementIfMissing(input: {
+  userId: string;
+  roomId?: string | null;
+  code: string;
+  title: string;
+  description: string;
+}): Promise<{ created: boolean; achievement?: UserAchievement }> {
+  const rows = await query<{
+    id: string;
+    user_id: string;
+    room_id: string | null;
+    code: string;
+    title: string;
+    description: string;
+    awarded_at: Date;
+  }>(
+    `
+      INSERT INTO user_achievements (id, user_id, room_id, code, title, description)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      ON CONFLICT (user_id, code) DO NOTHING
+      RETURNING id, user_id, room_id, code, title, description, awarded_at
+    `,
+    [
+      createId("ach"),
+      input.userId,
+      input.roomId ?? null,
+      input.code,
+      input.title,
+      input.description,
+    ],
+  );
+
+  const row = rows[0];
+  if (!row) {
+    return { created: false };
+  }
+
+  return {
+    created: true,
+    achievement: {
+      id: row.id,
+      userId: row.user_id,
+      roomId: row.room_id,
+      code: row.code,
+      title: row.title,
+      description: row.description,
+      awardedAt: row.awarded_at.toISOString(),
+    },
+  };
+}
+
+export async function listUserAchievements(userId: string): Promise<UserAchievement[]> {
+  const rows = await query<{
+    id: string;
+    user_id: string;
+    room_id: string | null;
+    code: string;
+    title: string;
+    description: string;
+    awarded_at: Date;
+  }>(
+    `
+      SELECT id, user_id, room_id, code, title, description, awarded_at
+      FROM user_achievements
+      WHERE user_id = $1
+      ORDER BY awarded_at DESC
+      LIMIT 100
+    `,
+    [userId],
+  );
+
+  return rows.map((row) => ({
+    id: row.id,
+    userId: row.user_id,
+    roomId: row.room_id,
+    code: row.code,
+    title: row.title,
+    description: row.description,
+    awardedAt: row.awarded_at.toISOString(),
+  }));
+}
+
+export async function getGamificationSummary(input: {
+  userId: string;
+  roomId?: string;
+}): Promise<GamificationSummary> {
+  const values: unknown[] = [input.userId];
+  let roomFilter = "";
+  if (input.roomId) {
+    values.push(input.roomId);
+    roomFilter = `AND room_id = $2`;
+  }
+
+  const xpRows = await query<{ total_xp: number; events_count: number }>(
+    `
+      SELECT
+        COALESCE(SUM(points), 0)::int AS total_xp,
+        COUNT(*)::int AS events_count
+      FROM xp_events
+      WHERE user_id = $1
+      ${roomFilter}
+    `,
+    values,
+  );
+
+  const totalXp = xpRows[0]?.total_xp ?? 0;
+  const eventsCount = xpRows[0]?.events_count ?? 0;
+  const level = calculateLevelByXp(totalXp);
+  const rank = rankByLevel(level);
+  const nextLevelXp = level * XP_PER_LEVEL;
+  const achievements = await listUserAchievements(input.userId);
+
+  return {
+    totalXp,
+    eventsCount,
+    level,
+    rank,
+    nextLevelXp,
+    achievements,
+  };
 }

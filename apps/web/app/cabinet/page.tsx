@@ -10,19 +10,30 @@ import clsx from "clsx";
 import {
   clearToken,
   createRoom,
+  getAiStatus,
+  getGamificationSummary,
+  getIntegrationsStatus,
   getMe,
   getMyRooms,
   getLeaderboard,
   getRoomMembers,
+  getRoomIntegrations,
   joinRoomWithCode,
+  sendIntegrationDiagnostics,
   setAnonymousMode,
   setMemberRole,
+  testRoomIntegrations,
   type AuthUser,
+  type AiProviderStatus,
+  type GamificationSummary,
+  type IntegrationStatus,
   type PlatformRoom,
   type PlatformRoomMember,
   type LeaderboardEntry,
+  type RoomIntegrationSettings,
   startRoom,
   stopRoom,
+  updateRoomIntegrations,
   updateGoal,
 } from "../../lib/platform-api";
 
@@ -35,6 +46,18 @@ export default function CabinetPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [leaderboardRoomId, setLeaderboardRoomId] = useState("");
+  const [gamification, setGamification] = useState<GamificationSummary | null>(null);
+  const [integrations, setIntegrations] = useState<IntegrationStatus | null>(null);
+  const [aiStatus, setAiStatus] = useState<AiProviderStatus | null>(null);
+  const [integrationTestMessage, setIntegrationTestMessage] = useState<string | null>(null);
+  const [isTestingIntegrations, setIsTestingIntegrations] = useState(false);
+  const [roomIntegrationsByRoom, setRoomIntegrationsByRoom] = useState<Record<string, RoomIntegrationSettings>>({});
+  const [roomIntegrationDrafts, setRoomIntegrationDrafts] = useState<
+    Record<string, { telegramChatId: string; discordWebhookUrl: string; discordNickname: string }>
+  >({});
+  const [savingRoomIntegrationId, setSavingRoomIntegrationId] = useState<string | null>(null);
+  const [testingRoomIntegrationId, setTestingRoomIntegrationId] = useState<string | null>(null);
+  const [roomIntegrationMessageByRoom, setRoomIntegrationMessageByRoom] = useState<Record<string, string>>({});
   const [updatingRoleKey, setUpdatingRoleKey] = useState<string | null>(null);
   const [updatingAnonymousRoomId, setUpdatingAnonymousRoomId] = useState<string | null>(null);
 
@@ -51,9 +74,17 @@ export default function CabinetPage() {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const [me, myRooms] = await Promise.all([getMe(), getMyRooms()]);
+      const [me, myRooms, nextIntegrations, nextAiStatus] = await Promise.all([
+        getMe(),
+        getMyRooms(),
+        getIntegrationsStatus(),
+        getAiStatus(),
+      ]);
       const membersEntries = await Promise.all(
         myRooms.map(async (room) => [room.id, await getRoomMembers(room.id)] as const),
+      );
+      const integrationsEntries = await Promise.all(
+        myRooms.map(async (room) => [room.id, await getRoomIntegrations(room.id)] as const),
       );
       const targetLeaderboardRoomId =
         leaderboardRoomId && myRooms.some((room) => room.id === leaderboardRoomId)
@@ -65,16 +96,37 @@ export default function CabinetPage() {
             limit: 10,
           })
         : [];
+      const gamificationSummary = await getGamificationSummary(
+        targetLeaderboardRoomId || undefined,
+      );
       const nextMembersByRoom: Record<string, PlatformRoomMember[]> = {};
       for (const [roomId, members] of membersEntries) {
         nextMembersByRoom[roomId] = members;
+      }
+      const nextIntegrationsByRoom: Record<string, RoomIntegrationSettings> = {};
+      const nextIntegrationDrafts: Record<
+        string,
+        { telegramChatId: string; discordWebhookUrl: string; discordNickname: string }
+      > = {};
+      for (const [roomId, settings] of integrationsEntries) {
+        nextIntegrationsByRoom[roomId] = settings;
+        nextIntegrationDrafts[roomId] = {
+          telegramChatId: settings.telegramChatId ?? "",
+          discordWebhookUrl: settings.discordWebhookUrl ?? "",
+          discordNickname: settings.discordNickname ?? "",
+        };
       }
 
       setUser(me);
       setRooms(myRooms);
       setMembersByRoom(nextMembersByRoom);
+      setRoomIntegrationsByRoom(nextIntegrationsByRoom);
+      setRoomIntegrationDrafts(nextIntegrationDrafts);
       setLeaderboard(leaderboardData);
       setLeaderboardRoomId(targetLeaderboardRoomId);
+      setGamification(gamificationSummary);
+      setIntegrations(nextIntegrations);
+      setAiStatus(nextAiStatus);
     } catch (error) {
       clearToken();
       router.push("/auth");
@@ -173,6 +225,91 @@ export default function CabinetPage() {
       setErrorMessage(error instanceof Error ? error.message : "Не удалось войти в комнату.");
     } finally {
       setIsJoining(false);
+    }
+  };
+
+  const runIntegrationTest = async (): Promise<void> => {
+    setIsTestingIntegrations(true);
+    setIntegrationTestMessage(null);
+    try {
+      const result = await sendIntegrationDiagnostics();
+      const chunks: string[] = [];
+      chunks.push(result.ok ? "Тест интеграций выполнен успешно." : "Тест интеграций завершился с ошибками.");
+      chunks.push(`Telegram: ${result.delivery.telegram}.`);
+      chunks.push(`Discord: ${result.delivery.discord}.`);
+      if (result.delivery.errors.length > 0) {
+        chunks.push(`Ошибки: ${result.delivery.errors.join(" | ")}`);
+      }
+      setIntegrationTestMessage(chunks.join(" "));
+      setIntegrations(result.integrations);
+    } catch (error) {
+      setIntegrationTestMessage(error instanceof Error ? error.message : "Не удалось выполнить тест интеграций.");
+    } finally {
+      setIsTestingIntegrations(false);
+    }
+  };
+
+  const updateRoomIntegrationDraft = (
+    roomId: string,
+    field: "telegramChatId" | "discordWebhookUrl" | "discordNickname",
+    value: string,
+  ): void => {
+    setRoomIntegrationDrafts((prev) => ({
+      ...prev,
+      [roomId]: {
+        telegramChatId: prev[roomId]?.telegramChatId ?? "",
+        discordWebhookUrl: prev[roomId]?.discordWebhookUrl ?? "",
+        discordNickname: prev[roomId]?.discordNickname ?? "",
+        [field]: value,
+      },
+    }));
+  };
+
+  const saveRoomIntegrationSettings = async (roomId: string): Promise<void> => {
+    const draft = roomIntegrationDrafts[roomId] ?? {
+      telegramChatId: "",
+      discordWebhookUrl: "",
+      discordNickname: "",
+    };
+    setSavingRoomIntegrationId(roomId);
+    setErrorMessage(null);
+    try {
+      const next = await updateRoomIntegrations(roomId, {
+        telegramChatId: draft.telegramChatId.trim() || null,
+        discordWebhookUrl: draft.discordWebhookUrl.trim() || null,
+        discordNickname: draft.discordNickname.trim() || null,
+      });
+      setRoomIntegrationsByRoom((prev) => ({ ...prev, [roomId]: next }));
+      setRoomIntegrationMessageByRoom((prev) => ({ ...prev, [roomId]: "Интеграции комнаты сохранены." }));
+    } catch (error) {
+      setRoomIntegrationMessageByRoom((prev) => ({
+        ...prev,
+        [roomId]: error instanceof Error ? error.message : "Не удалось сохранить интеграции комнаты.",
+      }));
+    } finally {
+      setSavingRoomIntegrationId(null);
+    }
+  };
+
+  const testRoomIntegrationSettings = async (roomId: string): Promise<void> => {
+    setTestingRoomIntegrationId(roomId);
+    try {
+      const result = await testRoomIntegrations(roomId);
+      const chunks: string[] = [];
+      chunks.push(result.ok ? "Тест отправлен успешно." : "Тест завершился с ошибками.");
+      chunks.push(`Telegram: ${result.delivery.telegram}.`);
+      chunks.push(`Discord: ${result.delivery.discord}.`);
+      if (result.delivery.errors.length > 0) {
+        chunks.push(`Ошибки: ${result.delivery.errors.join(" | ")}`);
+      }
+      setRoomIntegrationMessageByRoom((prev) => ({ ...prev, [roomId]: chunks.join(" ") }));
+    } catch (error) {
+      setRoomIntegrationMessageByRoom((prev) => ({
+        ...prev,
+        [roomId]: error instanceof Error ? error.message : "Не удалось отправить тест комнаты.",
+      }));
+    } finally {
+      setTestingRoomIntegrationId(null);
     }
   };
 
@@ -395,6 +532,65 @@ export default function CabinetPage() {
                     {room.role === "owner" && (
                       <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
                         <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">
+                          Интеграции комнаты
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          Telegram: укажите chat_id группы. Discord: webhook + ник для пинга (например `teamlead`).
+                        </p>
+                        <div className="mt-2 grid gap-2 md:grid-cols-2">
+                          <input
+                            value={roomIntegrationDrafts[room.id]?.telegramChatId ?? ""}
+                            onChange={(event) => updateRoomIntegrationDraft(room.id, "telegramChatId", event.target.value)}
+                            placeholder="-100xxxxxxxxxx"
+                            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-accent"
+                          />
+                          <input
+                            value={roomIntegrationDrafts[room.id]?.discordNickname ?? ""}
+                            onChange={(event) => updateRoomIntegrationDraft(room.id, "discordNickname", event.target.value)}
+                            placeholder="discord nickname"
+                            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-accent"
+                          />
+                          <input
+                            value={roomIntegrationDrafts[room.id]?.discordWebhookUrl ?? ""}
+                            onChange={(event) => updateRoomIntegrationDraft(room.id, "discordWebhookUrl", event.target.value)}
+                            placeholder="https://discord.com/api/webhooks/..."
+                            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-accent md:col-span-2"
+                          />
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void saveRoomIntegrationSettings(room.id)}
+                            disabled={savingRoomIntegrationId === room.id}
+                            className="rounded-full border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-wide text-slate-700 disabled:opacity-50"
+                          >
+                            {savingRoomIntegrationId === room.id ? "Сохраняем..." : "Сохранить"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void testRoomIntegrationSettings(room.id)}
+                            disabled={testingRoomIntegrationId === room.id}
+                            className="rounded-full bg-slate-900 px-3 py-2 text-[10px] font-black uppercase tracking-wide text-white disabled:opacity-50"
+                          >
+                            {testingRoomIntegrationId === room.id ? "Проверяем..." : "Тест в комнату"}
+                          </button>
+                        </div>
+                        {roomIntegrationMessageByRoom[room.id] && (
+                          <p className="mt-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                            {roomIntegrationMessageByRoom[room.id]}
+                          </p>
+                        )}
+                        <div className="mt-2 text-[11px] text-slate-500">
+                          Текущие: Telegram {roomIntegrationsByRoom[room.id]?.telegramChatId ? "настроен" : "не настроен"} ·
+                          {" "}
+                          Discord {roomIntegrationsByRoom[room.id]?.discordWebhookUrl ? "настроен" : "не настроен"}
+                        </div>
+                      </div>
+                    )}
+
+                    {room.role === "owner" && (
+                      <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                        <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">
                           Участники и роли
                         </p>
                         <div className="mt-2 space-y-2">
@@ -450,6 +646,85 @@ export default function CabinetPage() {
           </article>
         </section>
 
+        <section className="grid gap-5 lg:grid-cols-2">
+          <article className="rounded-[28px] border border-white/80 bg-white/70 p-5 shadow-panel backdrop-blur-2xl">
+            <h2 className="text-lg font-black text-ink">Мой прогресс</h2>
+            <p className="mt-1 text-sm text-slate-500">Сводка по выбранной комнате в лидерборде.</p>
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                <p className="text-[11px] font-black uppercase tracking-wide text-slate-400">Уровень</p>
+                <p className="mt-1 text-xl font-black text-slate-800">{gamification?.level ?? 1}</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                <p className="text-[11px] font-black uppercase tracking-wide text-slate-400">Ранг</p>
+                <p className="mt-1 text-xl font-black text-slate-800">{gamification?.rank ?? "Новичок"}</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                <p className="text-[11px] font-black uppercase tracking-wide text-slate-400">XP</p>
+                <p className="mt-1 text-xl font-black text-accent">{gamification?.totalXp ?? 0}</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                <p className="text-[11px] font-black uppercase tracking-wide text-slate-400">События</p>
+                <p className="mt-1 text-xl font-black text-slate-800">{gamification?.eventsCount ?? 0}</p>
+              </div>
+            </div>
+            <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">
+                Достижения ({gamification?.achievements.length ?? 0})
+              </p>
+              <div className="mt-2 space-y-2">
+                {(gamification?.achievements ?? []).slice(0, 4).map((achievement) => (
+                  <div key={achievement.id} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                    <p className="text-sm font-bold text-slate-800">{achievement.title}</p>
+                    <p className="text-xs text-slate-500">{achievement.description}</p>
+                  </div>
+                ))}
+                {(gamification?.achievements.length ?? 0) === 0 && (
+                  <p className="text-xs text-slate-500">Пока достижений нет.</p>
+                )}
+              </div>
+            </div>
+          </article>
+
+          <article className="rounded-[28px] border border-white/80 bg-white/70 p-5 shadow-panel backdrop-blur-2xl">
+            <h2 className="text-lg font-black text-ink">AI и интеграции</h2>
+            <p className="mt-1 text-sm text-slate-500">Диагностика модели и уведомлений Telegram/Discord.</p>
+            <div className="mt-4 space-y-3">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <p className="text-[11px] font-black uppercase tracking-wide text-slate-400">AI провайдер</p>
+                <p className="mt-2 text-sm font-semibold text-slate-700">
+                  {aiStatus?.provider ?? "openrouter"} · {aiStatus?.model ?? "n/a"}
+                </p>
+                <p className="mt-1 text-xs font-bold uppercase tracking-wide text-slate-500">
+                  {aiStatus?.enabled ? "Ключ найден: внешний режим" : "Ключ не найден: локальный режим"}
+                </p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <p className="text-[11px] font-black uppercase tracking-wide text-slate-400">Интеграции</p>
+                <p className="mt-2 text-sm font-semibold text-slate-700">
+                  Telegram: {integrations?.telegramConfigured ? "настроен" : "не настроен"}
+                </p>
+                <p className="text-sm font-semibold text-slate-700">
+                  Discord: {integrations?.discordConfigured ? "настроен" : "не настроен"}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void runIntegrationTest()}
+                  disabled={isTestingIntegrations}
+                  className="mt-3 rounded-xl border border-slate-200 bg-slate-900 px-4 py-2 text-[11px] font-black uppercase tracking-wide text-white disabled:opacity-50"
+                >
+                  {isTestingIntegrations ? "Проверяем..." : "Тест уведомлений"}
+                </button>
+                {integrationTestMessage && (
+                  <p className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                    {integrationTestMessage}
+                  </p>
+                )}
+              </div>
+            </div>
+          </article>
+        </section>
+
         <section className="rounded-[28px] border border-white/80 bg-white/70 p-5 shadow-panel backdrop-blur-2xl">
           <h2 className="text-lg font-black text-ink">Лидерборд комнаты</h2>
           <p className="mt-1 text-sm text-slate-500">Рейтинг формируется по XP за активность в коде.</p>
@@ -472,19 +747,23 @@ export default function CabinetPage() {
             </select>
           </div>
           <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white/90">
-            <div className="grid grid-cols-[64px_1fr_120px_120px] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 text-[11px] font-black uppercase tracking-wide text-slate-500">
+            <div className="grid grid-cols-[56px_1fr_86px_120px_100px_96px] gap-2 border-b border-slate-200 bg-slate-50 px-4 py-3 text-[11px] font-black uppercase tracking-wide text-slate-500">
               <span>Место</span>
               <span>Участник</span>
+              <span>Ур.</span>
+              <span>Ранг</span>
               <span>XP</span>
-              <span>Событий</span>
+              <span>Ачивки</span>
             </div>
             <div className="divide-y divide-slate-100">
               {leaderboard.map((item, index) => (
-                <div key={item.userId} className="grid grid-cols-[64px_1fr_120px_120px] gap-3 px-4 py-3 text-sm">
+                <div key={item.userId} className="grid grid-cols-[56px_1fr_86px_120px_100px_96px] gap-2 px-4 py-3 text-sm">
                   <span className="font-black text-slate-700">{index + 1}</span>
                   <span className="font-semibold text-slate-700">{item.name}</span>
+                  <span className="font-semibold text-slate-700">{item.level}</span>
+                  <span className="font-semibold text-slate-700">{item.rank}</span>
                   <span className="font-black text-accent">{item.totalXp}</span>
-                  <span className="font-semibold text-slate-600">{item.eventsCount}</span>
+                  <span className="font-semibold text-slate-600">{item.achievementsCount}</span>
                 </div>
               ))}
               {leaderboard.length === 0 && (

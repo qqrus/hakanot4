@@ -173,20 +173,36 @@ function getRowStatusTone(
 }
 
 export default function HomePage() {
-  const [roomId, setRoomId] = useState(() => {
-    if (typeof window === "undefined") {
-      return DEMO_ROOM_ID;
-    }
-    const fromQuery = new URLSearchParams(window.location.search).get("roomId")?.trim();
-    return fromQuery && fromQuery.length > 0 ? fromQuery : DEMO_ROOM_ID;
-  });
+  const [roomId, setRoomId] = useState(DEMO_ROOM_ID);
   const [myRooms, setMyRooms] = useState<PlatformRoom[]>([]);
   const [plan] = useState("Команда Pro");
   const [explainMode, setExplainMode] = useState(true);
   const [metrics, setMetrics] = useState<HomeMetrics>(defaultMetrics);
   const [backendOnline, setBackendOnline] = useState(false);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
-  const [lastUpdatedAt, setLastUpdatedAt] = useState<string>(new Date().toISOString());
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState(0);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const fromQuery = new URLSearchParams(window.location.search).get("roomId")?.trim();
+    if (fromQuery && fromQuery.length > 0 && fromQuery !== roomId) {
+      setRoomId(fromQuery);
+    }
+  }, [roomId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -328,6 +344,15 @@ export default function HomePage() {
     [metrics.core.stabilityIndex, metrics.syncRate, metrics.participants.online, metrics.participants.total, metrics.throughputPerMinute],
   );
 
+  const metricLegend = useMemo(
+    () => [
+      "Индекс стабильности: оценка устойчивости исполнения и ошибок runtime.",
+      "Индекс синхронизации: доля участников онлайн в выбранной комнате.",
+      "Темп команды: количество edit-событий в минуту за последний час.",
+    ],
+    [],
+  );
+
   const hybridRows = useMemo(() => {
     const metricRows = [
       {
@@ -404,6 +429,20 @@ export default function HomePage() {
     }
     return options;
   }, [myRooms, roomId]);
+
+  const lastUpdatedLabel = useMemo(() => {
+    if (!lastUpdatedAt) {
+      return "в ожидании";
+    }
+    const updatedAtMs = new Date(lastUpdatedAt).getTime();
+    if (Number.isNaN(updatedAtMs) || nowMs <= 0) {
+      return new Date(lastUpdatedAt).toLocaleTimeString("ru-RU");
+    }
+    const diffSec = Math.max(0, Math.floor((nowMs - updatedAtMs) / 1000));
+    if (diffSec < 2) return "только что";
+    if (diffSec < 60) return `${diffSec} сек назад`;
+    return `${Math.floor(diffSec / 60)} мин назад`;
+  }, [lastUpdatedAt, nowMs]);
 
   return (
     <main className="relative min-h-screen overflow-hidden px-4 py-5 lg:px-8">
@@ -540,6 +579,7 @@ export default function HomePage() {
                     initial={{ opacity: 0, y: 16 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ duration: 0.45, delay: 0.18 + index * 0.08 }}
+                    whileHover={{ y: -2, scale: 1.01 }}
                     className="rounded-2xl border border-slate-200/80 bg-white/90 p-4"
                   >
                     <item.icon size={16} className={clsx("mb-3", item.tone)} />
@@ -551,8 +591,18 @@ export default function HomePage() {
                   </motion.div>
                 ))}
               </div>
+              <div className="mt-3 rounded-2xl border border-slate-200/70 bg-slate-50/90 px-4 py-3">
+                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
+                  Легенда метрик
+                </p>
+                <div className="mt-2 space-y-1.5 text-xs text-slate-600">
+                  {metricLegend.map((line) => (
+                    <p key={line}>{line}</p>
+                  ))}
+                </div>
+              </div>
               <div className="mt-3 rounded-2xl border border-slate-200/80 bg-white/85 px-4 py-3 text-xs font-semibold text-slate-600">
-                Последнее обновление: {new Date(lastUpdatedAt).toLocaleTimeString("ru-RU")} ·
+                Последнее обновление: {lastUpdatedLabel} ·
                 {" "}
                 Отклик API: {latencyMs ? `${latencyMs}мс` : "н/д"}
               </div>

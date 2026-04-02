@@ -66,6 +66,53 @@ export interface LeaderboardEntry {
   avatar: string;
   totalXp: number;
   eventsCount: number;
+  level: number;
+  rank: string;
+  achievementsCount: number;
+}
+
+export interface UserAchievement {
+  id: string;
+  userId: string;
+  roomId: string | null;
+  code: string;
+  title: string;
+  description: string;
+  awardedAt: string;
+}
+
+export interface GamificationSummary {
+  totalXp: number;
+  eventsCount: number;
+  level: number;
+  rank: string;
+  nextLevelXp: number;
+  achievements: UserAchievement[];
+}
+
+export interface IntegrationStatus {
+  telegramConfigured: boolean;
+  discordConfigured: boolean;
+}
+
+export interface RoomIntegrationSettings {
+  roomId: string;
+  telegramChatId: string | null;
+  discordWebhookUrl: string | null;
+  discordNickname: string | null;
+  updatedAt: string;
+}
+
+export interface AiProviderStatus {
+  enabled: boolean;
+  provider: "openrouter";
+  model: string;
+}
+
+export interface IntegrationDeliveryReport {
+  telegram: "sent" | "skipped" | "failed";
+  discord: "sent" | "skipped" | "failed";
+  errors: string[];
 }
 
 export function getAuthToken(): string | null {
@@ -221,6 +268,16 @@ export async function getLeaderboard(params?: {
   return result.leaderboard;
 }
 
+export async function getGamificationSummary(roomId?: string): Promise<GamificationSummary> {
+  const query = new URLSearchParams();
+  if (roomId) {
+    query.set("roomId", roomId);
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  const result = await request<{ summary: GamificationSummary }>(`/api/platform/gamification/summary${suffix}`);
+  return result.summary;
+}
+
 export async function askNavigator(roomId: string, question: string): Promise<{
   answer: string;
   source: "openrouter" | "mock";
@@ -233,6 +290,63 @@ export async function askNavigator(roomId: string, question: string): Promise<{
 
 export async function sendIntegrationTest(): Promise<void> {
   await request("/api/platform/integrations/test", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function sendIntegrationDiagnostics(): Promise<{
+  ok: boolean;
+  integrations: IntegrationStatus;
+  delivery: IntegrationDeliveryReport;
+}> {
+  return request("/api/platform/integrations/test", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function getIntegrationsStatus(): Promise<IntegrationStatus> {
+  const result = await request<{ integrations: IntegrationStatus }>("/api/platform/integrations/status");
+  return result.integrations;
+}
+
+export async function getAiStatus(): Promise<AiProviderStatus> {
+  const result = await request<{ ai: AiProviderStatus }>("/api/platform/ai/status");
+  return result.ai;
+}
+
+export async function getRoomIntegrations(roomId: string): Promise<RoomIntegrationSettings> {
+  const result = await request<{ integrations: RoomIntegrationSettings }>(
+    `/api/platform/rooms/${encodeURIComponent(roomId)}/integrations`,
+  );
+  return result.integrations;
+}
+
+export async function updateRoomIntegrations(
+  roomId: string,
+  payload: {
+    telegramChatId?: string | null;
+    discordWebhookUrl?: string | null;
+    discordNickname?: string | null;
+  },
+): Promise<RoomIntegrationSettings> {
+  const result = await request<{ integrations: RoomIntegrationSettings }>(
+    `/api/platform/rooms/${encodeURIComponent(roomId)}/integrations`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    },
+  );
+  return result.integrations;
+}
+
+export async function testRoomIntegrations(roomId: string): Promise<{
+  ok: boolean;
+  integrations: IntegrationStatus;
+  delivery: IntegrationDeliveryReport;
+}> {
+  return request(`/api/platform/rooms/${encodeURIComponent(roomId)}/integrations/test`, {
     method: "POST",
     body: JSON.stringify({}),
   });

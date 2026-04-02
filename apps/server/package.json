@@ -9,7 +9,8 @@
     "lint": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "db:init": "tsx src/scripts/init-db.ts",
-    "seed": "tsx src/scripts/seed-demo.ts"
+    "seed": "tsx src/scripts/seed-demo.ts",
+    "seed:accounts": "tsx src/scripts/seed-demo-accounts.ts"
   },
   "dependencies": {
     "@collabcode/shared": "0.1.0",

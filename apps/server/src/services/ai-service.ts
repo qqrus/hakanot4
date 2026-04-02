@@ -3,7 +3,6 @@ import type { AiSource, AiStatusLevel, AiSuggestion, MockReviewContext } from "@
 import { createId } from "../lib/id.js";
 import { reviewCodeDiff } from "./mock-ai-reviewer.js";
 
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const MODEL = "arcee-ai/trinity-large-preview:free";
 
 export interface AiReviewResult {
@@ -27,20 +26,60 @@ export interface AiNavigatorResult {
   source: AiSource;
 }
 
+export interface AiProviderStatus {
+  enabled: boolean;
+  provider: "openrouter";
+  model: string;
+}
+
+function getOpenRouterApiKey(): string | null {
+  const key = process.env.OPENROUTER_API_KEY?.trim();
+  return key ? key : null;
+}
+
+export function getAiProviderStatus(): AiProviderStatus {
+  return {
+    enabled: Boolean(getOpenRouterApiKey()),
+    provider: "openrouter",
+    model: MODEL,
+  };
+}
+
 function parseSuggestions(content: string): AiSuggestion[] {
-  const start = content.indexOf("[");
-  const end = content.lastIndexOf("]");
-  if (start === -1 || end === -1 || end <= start) {
-    return [];
+  const candidates: string[] = [content.trim()];
+  const fencedMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fencedMatch?.[1]) {
+    candidates.push(fencedMatch[1].trim());
   }
 
-  const rawItems = JSON.parse(content.slice(start, end + 1)) as Array<{
+  const arrayStart = content.indexOf("[");
+  const arrayEnd = content.lastIndexOf("]");
+  if (arrayStart !== -1 && arrayEnd !== -1 && arrayEnd > arrayStart) {
+    candidates.push(content.slice(arrayStart, arrayEnd + 1));
+  }
+
+  let rawItems: Array<{
     severity?: "high" | "medium" | "low";
     title?: string;
     explanation?: string;
     suggestedFix?: string;
     line?: number;
-  }>;
+  }> = [];
+
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      if (Array.isArray(parsed)) {
+        rawItems = parsed as typeof rawItems;
+        break;
+      }
+    } catch {
+      continue;
+    }
+  }
 
   return rawItems
     .filter((item) => item.title && item.explanation && item.suggestedFix)
@@ -49,21 +88,26 @@ function parseSuggestions(content: string): AiSuggestion[] {
       id: createId("ai"),
       severity: item.severity ?? "medium",
       title: item.title ?? "Замечание по коду",
-      explanation: item.explanation ?? "Проверьте участок кода.",
+      explanation: item.explanation ?? "Проверьте этот фрагмент кода.",
       suggestedFix: item.suggestedFix ?? "Уточните логику и добавьте проверку.",
       createdAt: new Date().toISOString(),
       relatedRange: item.line ? { startLine: item.line, endLine: item.line } : undefined,
     }));
 }
 
+function fallbackReview(context: MockReviewContext, message: string): AiReviewResult {
+  return {
+    suggestions: reviewCodeDiff(context),
+    status: "fallback",
+    source: "mock",
+    message,
+  };
+}
+
 export async function reviewCodeWithAi(context: MockReviewContext): Promise<AiReviewResult> {
-  if (!OPENROUTER_API_KEY) {
-    return {
-      suggestions: reviewCodeDiff(context),
-      status: "fallback",
-      source: "mock",
-      message: "Внешний AI не настроен, использован локальный анализатор.",
-    };
+  const apiKey = getOpenRouterApiKey();
+  if (!apiKey) {
+    return fallbackReview(context, "Внешний AI не настроен, используется локальный анализатор.");
   }
 
   try {
@@ -93,7 +137,7 @@ ${context.nextCode}
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
         "HTTP-Referer": "https://collabcode.ai",
         "X-Title": "CollabCode AI",
         "Content-Type": "application/json",
@@ -101,38 +145,24 @@ ${context.nextCode}
       body: JSON.stringify({
         model: MODEL,
         messages: [{ role: "user", content: prompt }],
-        reasoning: { enabled: true },
       }),
     });
 
     if (!response.ok) {
-      return {
-        suggestions: reviewCodeDiff(context),
-        status: "fallback",
-        source: "mock",
-        message: `OpenRouter вернул ${response.status}, использован локальный анализатор.`,
-      };
+      const details = await response.text().catch(() => "");
+      const message = `OpenRouter returned ${response.status}. Local analyzer is used.${details ? ` Details: ${details.slice(0, 220)}` : ""}`;
+      return fallbackReview(context, message);
     }
 
     const data = await response.json();
     const content = data?.choices?.[0]?.message?.content;
     if (typeof content !== "string") {
-      return {
-        suggestions: reviewCodeDiff(context),
-        status: "fallback",
-        source: "mock",
-        message: "Ответ внешнего AI пустой, использован локальный анализатор.",
-      };
+      return fallbackReview(context, "Пустой ответ внешнего AI, используется локальный анализатор.");
     }
 
     const suggestions = parseSuggestions(content);
     if (suggestions.length === 0) {
-      return {
-        suggestions: reviewCodeDiff(context),
-        status: "fallback",
-        source: "mock",
-        message: "Ответ внешнего AI не распознан, использован локальный анализатор.",
-      };
+      return fallbackReview(context, "Ответ внешнего AI не распознан, используется локальный анализатор.");
     }
 
     return {
@@ -142,13 +172,8 @@ ${context.nextCode}
       message: "Анализ завершен внешним AI.",
     };
   } catch (error) {
-    console.error("Ошибка ИИ-ревью:", error);
-    return {
-      suggestions: reviewCodeDiff(context),
-      status: "fallback",
-      source: "mock",
-      message: "Ошибка внешнего AI, использован локальный анализатор.",
-    };
+    console.error("AI review failed:", error);
+    return fallbackReview(context, "Ошибка внешнего AI, используется локальный анализатор.");
   }
 }
 
@@ -158,14 +183,18 @@ export async function resolveConflictWithAi(
   userACode: string,
   userBCode: string,
 ): Promise<{ mergedCode: string; explanation: string }> {
-  if (!OPENROUTER_API_KEY) {
-    return { mergedCode: userACode, explanation: "ИИ не настроен для разрешения конфликтов." };
+  const apiKey = getOpenRouterApiKey();
+  if (!apiKey) {
+    return {
+      mergedCode: userACode,
+      explanation: "ИИ не настроен для разрешения конфликтов.",
+    };
   }
 
   try {
     const prompt = `
 Пользователи одновременно изменили один и тот же фрагмент кода в комнате ${roomId}.
-Ответь строго на русском языке.
+Отвечай строго на русском языке.
 
 Базовый код:
 ${baseCode}
@@ -187,15 +216,21 @@ ${userBCode}
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
         model: MODEL,
         messages: [{ role: "user", content: prompt }],
-        reasoning: { enabled: true },
       }),
     });
+
+    if (!response.ok) {
+      return {
+        mergedCode: userACode,
+        explanation: `OpenRouter недоступен (${response.status}).`,
+      };
+    }
 
     const data = await response.json();
     const content = data?.choices?.[0]?.message?.content;
@@ -219,13 +254,14 @@ ${userBCode}
       explanation: parsed.explanation ?? "Объединение выполнено с приоритетом версии A.",
     };
   } catch (error) {
-    console.error("Ошибка ИИ при разрешении конфликта:", error);
+    console.error("AI conflict resolution failed:", error);
     return { mergedCode: userACode, explanation: "Произошла ошибка при работе ИИ." };
   }
 }
 
 export async function getNavigatorAdvice(context: AiNavigatorContext): Promise<AiNavigatorResult> {
-  if (!OPENROUTER_API_KEY) {
+  const apiKey = getOpenRouterApiKey();
+  if (!apiKey) {
     const topSuggestion = context.recentSuggestions[0] ?? "Сначала проверьте последние изменения и тесты комнаты.";
     return {
       source: "mock",
@@ -261,7 +297,7 @@ ${context.code}
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
         "HTTP-Referer": "https://collabcode.ai",
         "X-Title": "CollabCode AI Navigator",
         "Content-Type": "application/json",
@@ -269,14 +305,13 @@ ${context.code}
       body: JSON.stringify({
         model: MODEL,
         messages: [{ role: "user", content: prompt }],
-        reasoning: { enabled: true },
       }),
     });
 
     if (!response.ok) {
       return {
         source: "mock",
-        answer: "Внешний AI недоступен. Начните с устранения последних high-risk замечаний и повторного запуска кода.",
+        answer: `Внешний AI недоступен (${response.status}). Начните с устранения последних high-risk замечаний и повторного запуска кода.`,
       };
     }
 
@@ -294,7 +329,7 @@ ${context.code}
       answer: content.trim(),
     };
   } catch (error) {
-    console.error("Ошибка AI-навигатора:", error);
+    console.error("AI navigator failed:", error);
     return {
       source: "mock",
       answer: "Внешний AI временно недоступен. Сфокусируйтесь на последнем блокере и проверьте код локальным запуском.",

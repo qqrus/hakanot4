@@ -9,17 +9,28 @@ import { z } from "zod";
 import { env } from "./config/env.js";
 import { createAuthToken, verifyAuthToken } from "./lib/auth-token.js";
 import { createId } from "./lib/id.js";
-import { getNavigatorAdvice } from "./services/ai-service.js";
-import { channelsConfigured, notifyChannels } from "./services/notification-service.js";
+import { getAiProviderStatus, getNavigatorAdvice } from "./services/ai-service.js";
+import {
+  channelsConfigured,
+  getChannelConfigFromEnv,
+  getIntegrationStatus,
+  notifyChannels,
+  notifyChannelsDetailed,
+  type NotificationChannelConfig,
+} from "./services/notification-service.js";
 import {
   addXpEvent,
+  awardAchievementIfMissing,
   createRoomForOwner,
   createUser,
   ensurePlatformSchema,
   findUserByEmail,
+  getGamificationSummary,
   getLeaderboard,
   getMembership,
   getRoomById,
+  getRoomIntegrationsByRoom,
+  getRoomIntegrationsForUser,
   getRoomRuntime,
   getUserById,
   joinRoom,
@@ -32,6 +43,7 @@ import {
   setRoomRuntimeStatusSystem,
   touchRoomRuntimeActivity,
   updateMemberRole,
+  updateRoomIntegrations,
   updateRoomGoal,
   validatePassword,
 } from "./services/platform-store.js";
@@ -55,9 +67,25 @@ const goalSchema = z.object({ goal: z.string().min(3).max(500) });
 const roleSchema = z.object({ targetUserId: z.string().min(3), role: z.enum(["editor", "viewer"]) });
 const anonymousSchema = z.object({ isAnonymous: z.boolean() });
 const navigatorSchema = z.object({ question: z.string().min(3).max(500) });
+const roomIntegrationsSchema = z.object({
+  telegramChatId: z.string().trim().max(64).nullable().optional(),
+  discordWebhookUrl: z.string().trim().url().max(500).nullable().optional(),
+  discordNickname: z.string().trim().max(80).nullable().optional(),
+});
 
 interface AuthenticatedRequest extends express.Request {
   auth?: { userId: string; email: string };
+}
+
+async function getRoomNotificationConfig(roomId: string): Promise<NotificationChannelConfig> {
+  const roomIntegrations = await getRoomIntegrationsByRoom(roomId);
+  const envConfig = getChannelConfigFromEnv();
+  return {
+    telegramBotToken: envConfig.telegramBotToken,
+    telegramChatId: roomIntegrations.telegramChatId,
+    discordWebhookUrl: roomIntegrations.discordWebhookUrl,
+    discordNickname: roomIntegrations.discordNickname,
+  };
 }
 
 function requireAuth(request: AuthenticatedRequest, response: express.Response, next: express.NextFunction): void {
@@ -259,7 +287,10 @@ app.post("/api/platform/rooms/:roomId/runtime/start", requireAuth, async (reques
     await startRoomContainer(runtimeMeta.containerId);
 
     const runtime = await setRoomRuntimeStatusSystem({ roomId, status: "running" });
-    void notifyChannels(`🚀 Комната ${roomId}: runtime запущен.`).catch(() => undefined);
+    void (async () => {
+      const config = await getRoomNotificationConfig(roomId);
+      await notifyChannels(`🚀 Комната ${roomId}: runtime запущен.`, config);
+    })().catch(() => undefined);
     response.json({ runtime });
   } catch (error) {
     response.status(403).json({ message: error instanceof Error ? error.message : "Не удалось запустить комнату." });
@@ -276,7 +307,10 @@ app.post("/api/platform/rooms/:roomId/runtime/stop", requireAuth, async (request
     });
     await stopRoomContainer(runtimeMeta.containerId);
     const runtime = await setRoomRuntimeStatusSystem({ roomId, status: "stopped" });
-    void notifyChannels(`🛑 Комната ${roomId}: runtime остановлен.`).catch(() => undefined);
+    void (async () => {
+      const config = await getRoomNotificationConfig(roomId);
+      await notifyChannels(`🛑 Комната ${roomId}: runtime остановлен.`, config);
+    })().catch(() => undefined);
     response.json({ runtime });
   } catch (error) {
     response.status(403).json({ message: error instanceof Error ? error.message : "Не удалось остановить комнату." });
@@ -354,6 +388,64 @@ app.get("/api/platform/rooms/:roomId/members", requireAuth, async (request: Auth
   }
 });
 
+app.get("/api/platform/rooms/:roomId/integrations", requireAuth, async (request: AuthenticatedRequest, response) => {
+  const roomId = String(request.params.roomId ?? "");
+  try {
+    const integrations = await getRoomIntegrationsForUser({
+      roomId,
+      userId: request.auth!.userId,
+    });
+    response.json({ integrations });
+  } catch (error) {
+    response.status(403).json({ message: error instanceof Error ? error.message : "Не удалось получить интеграции комнаты." });
+  }
+});
+
+app.patch("/api/platform/rooms/:roomId/integrations", requireAuth, async (request: AuthenticatedRequest, response) => {
+  const roomId = String(request.params.roomId ?? "");
+  const parsed = roomIntegrationsSchema.safeParse(request.body ?? {});
+  if (!parsed.success) {
+    response.status(400).json({ message: "Некорректные параметры интеграций комнаты." });
+    return;
+  }
+  try {
+    const integrations = await updateRoomIntegrations({
+      roomId,
+      ownerId: request.auth!.userId,
+      telegramChatId: parsed.data.telegramChatId ?? null,
+      discordWebhookUrl: parsed.data.discordWebhookUrl ?? null,
+      discordNickname: parsed.data.discordNickname ?? null,
+    });
+    response.json({ integrations });
+  } catch (error) {
+    response.status(403).json({ message: error instanceof Error ? error.message : "Не удалось обновить интеграции комнаты." });
+  }
+});
+
+app.post("/api/platform/rooms/:roomId/integrations/test", requireAuth, async (request: AuthenticatedRequest, response) => {
+  const roomId = String(request.params.roomId ?? "");
+  try {
+    const membership = await getMembership(roomId, request.auth!.userId);
+    if (!membership) {
+      response.status(403).json({ message: "Нет доступа к этой комнате." });
+      return;
+    }
+    const config = await getRoomNotificationConfig(roomId);
+    const integrations = getIntegrationStatus(config);
+    if (!channelsConfigured(config)) {
+      response.status(400).json({ message: "Интеграции этой комнаты не настроены.", integrations });
+      return;
+    }
+    const delivery = await notifyChannelsDetailed(
+      `✅ Тест уведомлений комнаты ${roomId} от ${request.auth!.email}`,
+      config,
+    );
+    response.json({ ok: delivery.errors.length === 0, integrations, delivery });
+  } catch (error) {
+    response.status(500).json({ message: error instanceof Error ? error.message : "Не удалось отправить тест комнаты." });
+  }
+});
+
 app.get("/api/platform/leaderboard", requireAuth, async (request: AuthenticatedRequest, response) => {
   const roomId = typeof request.query.roomId === "string" ? request.query.roomId : undefined;
   const limitRaw = typeof request.query.limit === "string" ? Number.parseInt(request.query.limit, 10) : undefined;
@@ -369,6 +461,24 @@ app.get("/api/platform/leaderboard", requireAuth, async (request: AuthenticatedR
     response.json({ leaderboard });
   } catch (error) {
     response.status(500).json({ message: error instanceof Error ? error.message : "Не удалось загрузить лидерборд." });
+  }
+});
+
+app.get("/api/platform/gamification/summary", requireAuth, async (request: AuthenticatedRequest, response) => {
+  const roomId = typeof request.query.roomId === "string" ? request.query.roomId : undefined;
+  try {
+    if (roomId) {
+      const membership = await getMembership(roomId, request.auth!.userId);
+      if (!membership) {
+        response.status(403).json({ message: "Нет доступа к комнате для получения геймификации." });
+        return;
+      }
+    }
+    const summary = await getGamificationSummary({ userId: request.auth!.userId, roomId });
+    response.json({ summary });
+  } catch (error) {
+    console.error("gamification summary failed:", error);
+    response.status(500).json({ message: "Не удалось получить сводку геймификации." });
   }
 });
 
@@ -408,13 +518,22 @@ app.post("/api/platform/rooms/:roomId/navigator", requireAuth, async (request: A
   response.json(result);
 });
 
+app.get("/api/platform/ai/status", requireAuth, (_request: AuthenticatedRequest, response) => {
+  response.json({ ai: getAiProviderStatus() });
+});
+
+app.get("/api/platform/integrations/status", requireAuth, (_request: AuthenticatedRequest, response) => {
+  response.json({ integrations: getIntegrationStatus() });
+});
+
 app.post("/api/platform/integrations/test", requireAuth, async (request: AuthenticatedRequest, response) => {
+  const integrations = getIntegrationStatus();
   if (!channelsConfigured()) {
-    response.status(400).json({ message: "Интеграции не настроены." });
+    response.status(400).json({ message: "Интеграции не настроены.", integrations });
     return;
   }
-  await notifyChannels(`✅ Тест уведомлений CollabCode от ${request.auth!.email}`);
-  response.json({ ok: true });
+  const delivery = await notifyChannelsDetailed(`✅ Тест уведомлений CollabCode от ${request.auth!.email}`);
+  response.json({ ok: delivery.errors.length === 0, integrations, delivery });
 });
 
 app.get("/api/rooms/:roomId", (request, response) => {
@@ -527,6 +646,68 @@ function touchRuntime(roomId: string): void {
   void touchRoomRuntimeActivity(roomId).catch(() => undefined);
 }
 
+async function awardRoomAchievements(input: {
+  roomId: string;
+  userId: string;
+  trigger: "edit" | "run-success";
+}): Promise<void> {
+  const summary = await getGamificationSummary({ userId: input.userId, roomId: input.roomId });
+  const achievementMessages: string[] = [];
+
+  const milestoneChecks: Array<{
+    when: boolean;
+    code: string;
+    title: string;
+    description: string;
+  }> = [
+    {
+      when: summary.eventsCount >= 1,
+      code: "first_steps",
+      title: "Первые шаги",
+      description: "Совершено первое действие в комнате.",
+    },
+    {
+      when: summary.totalXp >= 500,
+      code: "steady_contributor",
+      title: "Стабильный участник",
+      description: "Накоплено 500 XP в комнате.",
+    },
+    {
+      when: summary.totalXp >= 2000,
+      code: "team_engine",
+      title: "Двигатель команды",
+      description: "Накоплено 2000 XP в комнате.",
+    },
+    {
+      when: input.trigger === "run-success",
+      code: "green_run",
+      title: "Зеленый прогон",
+      description: "Код выполнен успешно без ошибки.",
+    },
+  ];
+
+  for (const check of milestoneChecks) {
+    if (!check.when) {
+      continue;
+    }
+    const result = await awardAchievementIfMissing({
+      userId: input.userId,
+      roomId: input.roomId,
+      code: check.code,
+      title: check.title,
+      description: check.description,
+    });
+    if (result.created) {
+      achievementMessages.push(`Достижение разблокировано: ${check.title}`);
+    }
+  }
+
+  for (const message of achievementMessages) {
+    const event = roomStore.pushSystemEvent(input.roomId, message);
+    broadcast(input.roomId, { type: "event", payload: event });
+  }
+}
+
 let autoStopLock = false;
 async function runRuntimeAutoStopSweep(): Promise<void> {
   if (autoStopLock) return;
@@ -543,7 +724,10 @@ async function runRuntimeAutoStopSweep(): Promise<void> {
         await markRoomRuntimeWarning(runtime.roomId, null);
         const event = roomStore.pushSystemEvent(runtime.roomId, "Комната автоматически остановлена после 15 минут простоя.");
         broadcast(runtime.roomId, { type: "event", payload: event });
-        void notifyChannels(`⏱️ Комната ${runtime.roomId}: auto-stop после простоя.`).catch(() => undefined);
+        void (async () => {
+          const config = await getRoomNotificationConfig(runtime.roomId);
+          await notifyChannels(`⏱️ Комната ${runtime.roomId}: auto-stop после простоя.`, config);
+        })().catch(() => undefined);
       } else if (idleMs >= 13 * 60 * 1000 && !runtime.warningSentAt) {
         await markRoomRuntimeWarning(runtime.roomId, new Date());
         const event = roomStore.pushSystemEvent(runtime.roomId, "Внимание: через 2 минуты без активности контейнер будет остановлен.");
@@ -664,7 +848,10 @@ wss.on("connection", (socket) => {
               broadcast(message.payload.roomId, { type: "ai-suggestions", payload: suggestions });
               if (aiEvent) broadcast(message.payload.roomId, { type: "event", payload: aiEvent });
               if (suggestions.some((item) => item.severity === "high")) {
-                void notifyChannels(`⚠️ Комната ${message.payload.roomId}: AI обнаружил критические замечания.`).catch(() => undefined);
+                void (async () => {
+                  const config = await getRoomNotificationConfig(message.payload.roomId);
+                  await notifyChannels(`⚠️ Комната ${message.payload.roomId}: AI обнаружил критические замечания.`, config);
+                })().catch(() => undefined);
               }
             },
           );
@@ -672,6 +859,11 @@ wss.on("connection", (socket) => {
             void addXpEvent({ roomId: message.payload.roomId, userId: meta.userId, points: xpDelta, eventType: "edit" }).catch(
               (error) => console.error("xp event insert failed:", error),
             );
+            void awardRoomAchievements({
+              roomId: message.payload.roomId,
+              userId: meta.userId,
+              trigger: "edit",
+            }).catch((error) => console.error("achievement award failed:", error));
           }
           broadcast(message.payload.roomId, { type: "doc-update", payload: { update: message.payload.update, actorId: message.payload.actorId } }, message.payload.actorId);
           if (event) broadcast(message.payload.roomId, { type: "event", payload: event });
@@ -703,6 +895,22 @@ wss.on("connection", (socket) => {
           });
           const finishedTerminal = roomStore.finishExecution(message.payload.roomId, result.status);
           broadcast(message.payload.roomId, { type: "execution-status", payload: finishedTerminal });
+          if (meta.userId && (result.status === "success" || result.status === "error")) {
+            const runXp = result.status === "success" ? 20 : 5;
+            void addXpEvent({
+              roomId: message.payload.roomId,
+              userId: meta.userId,
+              points: runXp,
+              eventType: "run",
+            }).catch((error) => console.error("run xp event insert failed:", error));
+          }
+          if (meta.userId && result.status === "success") {
+            void awardRoomAchievements({
+              roomId: message.payload.roomId,
+              userId: meta.userId,
+              trigger: "run-success",
+            }).catch((error) => console.error("run achievement award failed:", error));
+          }
           break;
         }
         case "set-anonymous": {

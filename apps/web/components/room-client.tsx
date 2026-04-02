@@ -331,6 +331,23 @@ export function RoomClient({ roomId }: RoomClientProps) {
   }, [aiState.status, errorMessage]);
   const isViewer = roomRole === "viewer";
 
+  const roomKpi = useMemo(() => {
+    const online = participants.filter((item) => item.status === "online").length;
+    const editsLast5m = events.filter((event) => {
+      if (event.type !== "edit") {
+        return false;
+      }
+      const ts = new Date(event.createdAt).getTime();
+      return Number.isFinite(ts) && Date.now() - ts <= 5 * 60 * 1000;
+    }).length;
+    const criticalFindings = suggestions.filter((item) => item.severity === "high").length;
+    return {
+      online,
+      editsPerMinute: Number((editsLast5m / 5).toFixed(2)),
+      criticalFindings,
+    };
+  }, [participants, events, suggestions]);
+
   const submitNavigatorQuestion = async (): Promise<void> => {
     if (!navigatorQuestion.trim()) {
       return;
@@ -477,6 +494,32 @@ export function RoomClient({ roomId }: RoomClientProps) {
 
           {/* Right Sidebar Bento Components */}
           <aside className="grid gap-6">
+            <motion.div
+              {...FADE_UP}
+              transition={{ delay: 0.28 }}
+              className="rounded-[2.5rem] border border-white bg-white/70 p-5 shadow-panel backdrop-blur-2xl"
+            >
+              <h2 className="text-[11px] font-black uppercase tracking-[0.3em] text-slate-400">
+                Состояние комнаты сейчас
+              </h2>
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                <div className="rounded-xl border border-slate-200 bg-white p-3">
+                  <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">Онлайн</p>
+                  <p className="mt-1 text-lg font-black text-slate-800">{roomKpi.online}</p>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-white p-3">
+                  <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">Темп</p>
+                  <p className="mt-1 text-lg font-black text-slate-800">{roomKpi.editsPerMinute}/мин</p>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-white p-3">
+                  <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">High-risk</p>
+                  <p className={clsx("mt-1 text-lg font-black", roomKpi.criticalFindings > 0 ? "text-primary" : "text-success")}>
+                    {roomKpi.criticalFindings}
+                  </p>
+                </div>
+              </div>
+            </motion.div>
+
             {/* 3D Glass AI Visualization */}
             <motion.div {...FADE_UP} transition={{ delay: 0.3 }} className="rounded-[2.5rem] border border-white bg-white/40 p-6 shadow-panel backdrop-blur-3xl relative overflow-hidden flex min-h-[280px] flex-col items-center justify-center group pointer-events-auto isolate">
               {/* Soft spotlight behind the glass */}
@@ -532,8 +575,8 @@ export function RoomClient({ roomId }: RoomClientProps) {
                   ))
                 ) : (
                   <div className="h-full flex items-center justify-center flex-col text-center opacity-60">
-                    <span className="text-4xl mb-3 grayscale mix-blend-luminosity">💡</span>
-                    <p className="text-sm font-semibold text-slate-500">Код соответствует текущим проверкам.</p>
+                    <p className="text-sm font-semibold text-slate-500">Критичных замечаний не найдено.</p>
+                    <p className="mt-1 text-xs text-slate-400">ИИ продолжает мониторинг новых правок.</p>
                   </div>
                 )}
               </div>
