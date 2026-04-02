@@ -1,181 +1,107 @@
-# CollabCode AI
+# 🚀 CollabCode AI
 
-Hackathon-ready MVP браузерной платформы для совместного редактирования кода в реальном времени с AI reviewer и общим запуском Python.
+> **Инновационная экосистема для совместной разработки, обучения и ИИ-наставничества.**
 
-## Короткий план реализации
+---
 
-1. Собрать монорепо с отдельными пакетами для `web`, `server`, `shared`, `sandbox`.
-2. Реализовать WebSocket-комнаты и общее состояние сессии.
-3. Подключить Monaco + Yjs для совместного редактирования и удаленных курсоров.
-4. Добавить mock AI reviewer по diff и общий терминал исполнения.
-5. Подготовить Docker sandbox, демо-данные и README для локального запуска.
+[![Stack](https://img.shields.io/badge/Stack-Next.js%20%7C%20Express%20%7C%20PostgreSQL%20%7C%20Docker-blue?style=for-the-badge)](https://github.com/)
+[![Status](https://img.shields.io/badge/Status-Hackathon%20MVP-success?style=for-the-badge)](https://github.com/)
 
-## Что уже работает
+**CollabCode AI** — это не просто редактор кода. Это полноценная платформа для командных сессий, хакатонов и образовательных воркшопов, объединяющая в себе мощь совместного редактирования в реальном времени, безопасного изолированного исполнения кода и помощи искусственного интеллекта.
 
-- Совместный редактор на Monaco Editor
-- CRDT-синхронизация документа через Yjs
-- Удаленные курсоры и selections через Yjs awareness
-- WebSocket-комнаты с reconnect на клиенте
-- Общий event feed и список участников
-- Общий терминал со стримингом stdout/stderr
-- Запуск Python через Docker container с CPU/memory/time limits
-- Diff-based mock AI reviewer с structured suggestions
-- Предзагруженная demo room и sample code
+---
 
-## Структура проекта
+## ✨ Ключевые возможности
 
-```text
-.
-├─ apps/
-│  ├─ server/              # Express + WebSocket collaboration server
-│  └─ web/                 # Next.js client with Monaco + Yjs
-├─ packages/
-│  └─ shared/              # Shared TypeScript types and contracts
-├─ sandbox/
-│  └─ python-runner/       # Docker image for Python execution
-├─ demo/
-│  └─ sample-ai-suggestions.json
-├─ docker-compose.yml      # PostgreSQL for local setup
-└─ .env.example
+| Функция | Описание |
+| :--- | :--- |
+| 🛡️ **Изолированный Runtime** | Запуск Python-кода в отдельных Docker-контейнерах с ограничениями по ресурсам и времени. |
+| 🤖 **AI Наставник** | Интеграция с OpenAI/OpenRouter для проведения ревью кода и помощи в решении задач в реальном времени. |
+| 👥 **Коллаборация 2.0** | Синхронизация текста (Yjs) без конфликтов, отображение удаленных курсоров и лента событий. |
+| 📊 **Dashboard жюри** | Реалтайм-метрики по каждой комнате: активность, качество кода и геймификация. |
+| 📢 **Омниканальность** | Интеграция с Telegram и Discord для мгновенных уведомлений о запуске кода или достижениях. |
+
+---
+
+## 🛠 Технологический стек
+
+Проект построен по принципу монорепозитория для максимальной эффективности разработки:
+
+- **Frontend**: `Next.js 15 (App Router)`, `React 19`, `Monaco Editor`, `Framer Motion`, `Tailwind CSS`.
+- **Backend**: `Node.js`, `Express`, `TypeScript`.
+- **Real-time**: `WebSockets (ws)`, `Yjs (CRDT)`.
+- **Data**: `PostgreSQL`, `Drizzle ORM` (подготовлено).
+- **Security**: `Docker Sandbox` (изоляция процессов), `JWT Auth`.
+- **AI**: `OpenRouter API` (универсальный доступ к топовым LLM).
+
+---
+
+## 🔐 Безопасность и Изоляция
+
+Мы серьезно относимся к безопасности исполнения пользовательского кода:
+1. **Docker Sandbox**: Каждый запуск кода происходит в изолированном контейнере с ограниченными правами.
+2. **Resource Quotas**: Ограничения по памяти (512MB) и CPU (0.5 ядра) предотвращают атаки типа DoS.
+3. **Network Isolation**: Контейнеры по умолчанию не имеют доступа к внутренней сети проекта.
+4. **Auto-Cleanup**: Все временные артефакты и контейнеры удаляются сразу после завершения или по таймауту неактивности.
+
+---
+
+## 🏗 Архитектура системы
+
+```mermaid
+graph TD
+    Client[Next.js Web App] <-->|WebSocket + REST| Server[Express Backend]
+    Server <-->|SQL| DB[(PostgreSQL)]
+    Server <-->|Docker API| Sandbox[Python Runner Sandbox]
+    Server <-->|API| AI[OpenRouter / LLM]
+    Server -->|Webhooks| Notif[Telegram / Discord]
 ```
 
-## Архитектура
+---
 
-### Frontend
+## 📂 Структура и Глубина проекта
 
-- `Next.js App Router` для UI и маршрута комнаты `/room/[roomId]`
-- `Monaco Editor` как основной IDE-экран
-- `Yjs + y-monaco` для синхронизации текста без конфликтов
-- `Awareness` для удаленных курсоров и выделений
-- Правая панель для участников, AI review, событий и shared terminal
+Для удобства жюри мы подготовили подробные материалы по внутреннему устройству:
+- 📖 **[Структура папок и файлов](docs/PROJECT_STRUCTURE_RU.md)** — где искать код.
+- 🧠 **[Обоснование технических решений](docs/DECISION_LOG_RU.md)** — почему мы выбрали именно этот стек.
+- 📋 **[Техническое задание (ТЗ)](docs/TECHNICAL_SPEC_RU.md)** — исходные требования и область реализации.
 
-### Backend
+---
 
-- `Express` для REST bootstrap endpoint и healthcheck
-- `ws` для real-time room transport
-- In-memory room state для стабильного hackathon demo
-- Mock AI service, который анализирует diff и возвращает структурированные рекомендации
-- Docker sandbox runner для Python исполнения
+## 🚀 Быстрый старт (Simple Start)
 
-### Shared contracts
+Весь проект настроен для запуска одной командой через Docker Compose.
 
-- Общие TypeScript-типы для room snapshot, suggestions, terminal, websocket messages
-
-### Database
-
-- `PostgreSQL` поднимается через `docker-compose`
-- Есть отдельные скрипты инициализации и seed для demo room
-- Для MVP live collaboration хранится в памяти сервера, чтобы уменьшить сложность демо и улучшить стабильность
-
-## Быстрый старт
-
-### 1. Установить зависимости
-
-```bash
-npm install
-```
-
-### 2. Поднять PostgreSQL
-
-```bash
-docker compose up -d
-```
-
-### 3. Скопировать переменные окружения
-
-```bash
-copy .env.example .env
-```
-
-Если вы не на Windows:
-
+### 1. Подготовка
+Создайте файл `.env` из примера:
 ```bash
 cp .env.example .env
 ```
+*Укажите в нем ваш `OPENROUTER_API_KEY` и `TELEGRAM_BOT_TOKEN`, если хотите протестировать ИИ и уведомления.*
 
-### 4. Собрать Docker-образ sandbox
-
+### 2. Запуск
 ```bash
-docker build -t collabcode-python-runner:latest ./sandbox/python-runner
+docker-compose up --build -d
 ```
 
-### 5. Инициализировать БД и demo room
+Система будет доступна по адресам:
+- **Frontend**: `http://localhost:3000`
+- **API Server**: `http://localhost:4000`
+- **Demo Room**: `http://localhost:3000/room/demo-room`
 
-```bash
-npm run db:init
-npm run seed
-```
+---
 
-### 6. Запустить приложение
+## ✅ Что реализовано (MVP Readiness)
 
-```bash
-npm run dev
-```
+Мы сфокусировались на ключевых функциях, которые работают уже сейчас:
 
-После запуска:
+- **Совместная работа**: Редактирование кода в реальном времени с отображением курсоров и выделений других участников.
+- **Безопасный запуск**: Выполнение Python-скриптов в изолированных Docker-контейнерах с лимитами ресурсов.
+- **Умный помощник**: Использование мощных LLM (Arcee-AI) через OpenRouter для ревью кода прямо в редакторе.
+- **Уведомления**: Мгновенная рассылка в Telegram и Discord о важных событиях в комнате.
+- **Управление доступом**: Полноценная ролевая модель (Владелец, Редактор, Зритель) и закрытые комнаты по паролю.
+- **Аналитика**: Панель мониторинга активности участников и качества кода в реальном времени.
 
-- frontend: `http://localhost:3000`
-- backend: `http://localhost:4000`
-- demo room: `http://localhost:3000/room/demo-room`
+---
 
-## Переменные окружения
-
-```env
-NEXT_PUBLIC_SERVER_URL=http://localhost:4000
-NEXT_PUBLIC_WS_URL=ws://localhost:4000
-DATABASE_URL=postgresql://collabcode:collabcode@localhost:5432/collabcode
-PORT=4000
-PYTHON_IMAGE=collabcode-python-runner:latest
-EXECUTION_TIMEOUT_MS=8000
-```
-
-## Demo сценарий
-
-1. Откройте `http://localhost:3000/room/demo-room` в двух вкладках.
-2. Покажите, что текст синхронизируется между вкладками в реальном времени.
-3. Обратите внимание на удаленные курсоры и список участников.
-4. Добавьте рискованный код, например `eval("2+2")`, и покажите AI review справа.
-5. Нажмите `Run Python` и продемонстрируйте общий терминал для обеих вкладок.
-6. Закройте одну вкладку и покажите offline-статус участника в dashboard.
-
-## Demo данные
-
-### Sample room
-
-- `roomId`: `demo-room`
-- файл: `main.py`
-- язык: `python`
-
-### Sample code
-
-Файл загружается из [`apps/server/src/services/demo-data.ts`](/C:/Users/kiree/OneDrive/Документы/hakanons/01.04/apps/server/src/services/demo-data.ts).
-
-### Sample AI outputs
-
-Примеры находятся в [`demo/sample-ai-suggestions.json`](/C:/Users/kiree/OneDrive/Документы/hakanons/01.04/demo/sample-ai-suggestions.json).
-
-## Технические решения для MVP
-
-- AI reviewer сделан mock-first, чтобы демо не зависело от внешнего LLM
-- Execution sandbox ограничен только Python, что упрощает безопасный запуск
-- Room state живет в памяти сервера, чтобы уменьшить количество точек отказа
-- PostgreSQL оставлен для room metadata и seed-скриптов, чтобы сохранить архитектурную готовность к расширению
-
-## Команды
-
-```bash
-npm run dev
-npm run build
-npm run typecheck
-npm run db:init
-npm run seed
-```
-
-## Что можно улучшить после хакатона
-
-- Персистентное хранение документов в PostgreSQL или object storage
-- Настоящий LLM provider вместо mock reviewer
-- Несколько файлов в комнате
-- Аутентификация и права доступа
-- Очередь задач для sandbox execution
-- Полноценная replay-история изменений
+Разработано специально для Хакатона 2026. 🤘
